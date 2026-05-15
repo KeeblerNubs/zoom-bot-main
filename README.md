@@ -1,8 +1,8 @@
 # Zoom Bot (Playwright)
 
 ## What changed for speed/efficiency
-- Faster loop defaults with small non-zero polling (`POLL_INTERVAL_MS=60`) to avoid CPU thrash.
-- Reduced repeated frame-scanning overhead via configurable frame cap (`MAX_FRAME_SCAN`, default 3).
+- Faster loop defaults with small non-zero polling (`POLL_INTERVAL_MS=30`) to avoid CPU thrash.
+- Reduced repeated frame-scanning overhead via configurable frame cap (`MAX_FRAME_SCAN`, default 2).
 - Optional OCR mode (`--ocr`) using local `tesseract` binary for fallback state detection (e.g., waiting room text when DOM selectors fail).
 - Better message input path: `--message "..."` uses direct textbox fill + Enter (faster/reliable than paste-only).
 
@@ -64,7 +64,7 @@
 Use environment variables:
 
 ```bash
-REPEAT_SPEED_MS=80 POLL_INTERVAL_MS=60 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAME_SCAN=3 node zoom-bot.js 123456789 --message "ping"
+REPEAT_SPEED_MS=20 POLL_INTERVAL_MS=30 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAME_SCAN=2 node zoom-bot.js 123456789 --message "ping"
 ```
 
 - `REPEAT_SPEED_MS`: delay between sends (higher = slower, lower CPU/network burst)

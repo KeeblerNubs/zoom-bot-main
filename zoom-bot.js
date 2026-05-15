@@ -12,14 +12,15 @@ const execFileAsync = promisify(execFile);
 
 const CONFIG = {
   turboMode: true,
-  repeatSpeedMs: Number(process.env.REPEAT_SPEED_MS || 50),
+  repeatSpeedMs: Number(process.env.REPEAT_SPEED_MS || 20),
   chatDiscoveryTimeoutMs: Number(process.env.CHAT_DISCOVERY_TIMEOUT_MS || 120000),
-  pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 60),
-  maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 3),
+  pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30),
+  maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 2),
   useOcr: process.argv.includes("--ocr")
 };
 
 let lastScrollLogTime = 0;
+let maintenanceTick = 0;
 let lastOcrCheck = 0;
 
 function randomName() {
@@ -251,7 +252,7 @@ async function waitForChatInput(page) {
       console.log(`Chat input found using selector: ${selector}`);
 
       while (!page.isClosed()) {
-        await clickAnyJoinButton(page);
+        if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page);
         if (message) {
           await chatBox.fill(message).catch(() => {});
         } else {
