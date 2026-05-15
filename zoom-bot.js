@@ -2,48 +2,40 @@
 const { chromium } = require("playwright");
 const readline = require("node:readline/promises");
 const { stdin: input, stdout: output } = require("node:process");
+const { execFile } = require("node:child_process");
+const { promisify } = require("node:util");
+const { mkdtemp, rm } = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 
-const TURBO_MODE = true;
-const REPEAT_SPEED_MS = 0;
-const CHAT_DISCOVERY_TIMEOUT_MS = 860000;
-const POLL_INTERVAL_MS = 0;
+const execFileAsync = promisify(execFile);
+
+const CONFIG = {
+  turboMode: true,
+  repeatSpeedMs: Number(process.env.REPEAT_SPEED_MS || 50),
+  chatDiscoveryTimeoutMs: Number(process.env.CHAT_DISCOVERY_TIMEOUT_MS || 120000),
+  pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 60),
+  maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 3),
+  useOcr: process.argv.includes("--ocr")
+};
 
 let lastScrollLogTime = 0;
+let lastOcrCheck = 0;
 
 function randomName() {
   const names = ["Mundy", "Jake", "slmpig", "Nathan", "Intelll"];
   return names[Math.floor(Math.random() * names.length)];
 }
 
-async function checkAndHandleCaptcha(page) {
-  for (const frame of page.frames()) {
-    try {
-      // Detect standard reCAPTCHA 'I am not a robot' checkbox
-      const recaptcha = frame.locator('#recaptcha-anchor');
-      if (await recaptcha.count() > 0 && await recaptcha.isVisible()) {
-        console.log("reCAPTCHA checkbox detected! Clicking...");
-        await recaptcha.click({ force: true }).catch(() => {});
-        // Note: For complex image challenges, a third-party solver API would be required here.
-        return true;
-      }
-
-      // Detect other 'I am not a robot' buttons or labels used by Zoom
-      const genericCaptcha = frame.locator('button:has-text("I am not a robot"), [aria-label*="not a robot" i]');
-      if (await genericCaptcha.count() > 0 && await genericCaptcha.isVisible()) {
-        console.log("Generic captcha button detected! Clicking...");
-        await genericCaptcha.click({ force: true }).catch(() => {});
-        return true;
-      }
-    } catch (e) {
-      // Ignore errors from detached or cross-origin frames
-    }
-  }
-  return false;
-}
-
 function normalizeMeetingId(value) {
   const digitsOnly = String(value || "").replace(/\D/g, "");
   return digitsOnly.length >= 9 ? digitsOnly : "";
+}
+
+function getArgValue(flag) {
+  const index = process.argv.indexOf(flag);
+  if (index === -1 || index + 1 >= process.argv.length) return "";
+  return String(process.argv[index + 1] || "").trim();
 }
 
 async function getMeetingId() {
@@ -77,27 +69,64 @@ async function safeWait(page, ms) {
 
 async function clickFirstVisible(locator) {
   try {
-    if (await locator.count() === 0) return false;
+    if ((await locator.count()) === 0) return false;
     const first = locator.first();
-    await first.click({ timeout: 10, force: true });
+    await first.click({ timeout: 25, force: true });
     return true;
   } catch {
     return false;
   }
 }
 
+async function detectTextViaOcr(page) {
+  if (!CONFIG.useOcr || Date.now() - lastOcrCheck < 5000) return "";
+  lastOcrCheck = Date.now();
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "zoom-bot-"));
+  const screenshotPath = path.join(tempDir, "shot.png");
+  try {
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+    const { stdout } = await execFileAsync("tesseract", [screenshotPath, "stdout", "--dpi", "300"], { timeout: 5000 });
+    return String(stdout || "").toLowerCase();
+  } catch {
+    return "";
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function checkAndHandleCaptcha(page) {
+  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  for (const frame of frames) {
+    try {
+      const recaptcha = frame.locator('#recaptcha-anchor');
+      if ((await recaptcha.count()) > 0 && (await recaptcha.isVisible())) {
+        console.log("reCAPTCHA checkbox detected! Clicking...");
+        await recaptcha.click({ force: true }).catch(() => {});
+        return true;
+      }
+      const genericCaptcha = frame.locator('button:has-text("I am not a robot"), [aria-label*="not a robot" i]');
+      if ((await genericCaptcha.count()) > 0 && (await genericCaptcha.isVisible())) {
+        console.log("Generic captcha button detected! Clicking...");
+        await genericCaptcha.click({ force: true }).catch(() => {});
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 async function clickAnyJoinButton(page) {
   await checkAndHandleCaptcha(page);
 
-  for (const frame of page.frames()) {
+  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  for (const frame of frames) {
     try {
-      const bodyText = await frame.innerText("body").catch(() => "");
+      const bodyText = (await frame.innerText("body").catch(() => "")).toLowerCase();
       const isRemoved = await frame.locator('.zm-modal-body-title:has-text("You have been removed")').count().catch(() => 0) > 0;
-      const inWaitingRoom = bodyText.toLowerCase().includes("waiting room") || bodyText.toLowerCase().includes("let you in soon");
+      const inWaitingRoom = bodyText.includes("waiting room") || bodyText.includes("let you in soon");
 
-      if (isRemoved || inWaitingRoom) {
-        throw new Error("RESTART_CYCLE");
-      }
+      if (isRemoved || inWaitingRoom) throw new Error("RESTART_CYCLE");
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
@@ -106,61 +135,57 @@ async function clickAnyJoinButton(page) {
         (await clickFirstVisible(frame.locator(".preview-join-button"))) ||
         (await clickFirstVisible(frame.locator('[data-testid*="join" i]'))) ||
         (await clickFirstVisible(frame.locator('button:has-text("Join")')))
-      ) {
-        return true;
-      }
+      ) return true;
     } catch (e) {
       if (e.message === "RESTART_CYCLE") throw e;
-      // Ignore detached frame errors
     }
   }
-  // If we didn't click anything, perform a small scroll down to reveal potential hidden buttons
+
+  const ocrText = await detectTextViaOcr(page);
+  if (ocrText.includes("waiting room") || ocrText.includes("let you in soon")) throw new Error("RESTART_CYCLE");
+
   if (Date.now() - lastScrollLogTime > 2000) {
     console.log("No buttons found yet, scrolling down to discover elements...");
     lastScrollLogTime = Date.now();
   }
-  await page.mouse.wheel(0, 300).catch(() => {});
+  await page.mouse.wheel(0, 250).catch(() => {});
   return false;
 }
 
 async function clickChatButton(page) {
-  for (const frame of page.frames()) {
+  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  for (const frame of frames) {
     if (
       (await clickFirstVisible(frame.getByRole("button", { name: /chat/i }))) ||
       (await clickFirstVisible(frame.locator('[aria-label*="chat" i]'))) ||
       (await clickFirstVisible(frame.locator('[data-testid*="chat" i]'))) ||
       (await clickFirstVisible(frame.locator('button:has-text("Chat")')))
-    ) {
-      return true;
-    }
+    ) return true;
   }
   return false;
 }
 
 async function triggerChatShortcut(page) {
-  for (const combo of ["Alt+h"]) {
-    await page.keyboard.press(combo, { delay: 0 }).catch(() => {});
-    if (!(await safeWait(page, TURBO_MODE ? 0 : 250))) return;
-  }
+  await page.keyboard.press("Alt+h", { delay: 0 }).catch(() => {});
+  if (!CONFIG.turboMode) await safeWait(page, 250);
 }
 
 async function findChatInput(page) {
   const selectors = [
     '.tiptap.ProseMirror[contenteditable="true"]',
-    ".tiptap.ProseMirror",
+    '.tiptap.ProseMirror',
     '[contenteditable="true"][role="textbox"]',
     '[contenteditable="true"][aria-label*="message" i]',
     'textarea[aria-label*="message" i]',
-    "textarea"
+    'textarea'
   ];
 
-  for (const frame of page.frames()) {
+  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  for (const frame of frames) {
     for (const selector of selectors) {
       const locator = frame.locator(selector).first();
       try {
-        if ((await locator.count()) > 0 && (await locator.isVisible())) {
-          return { locator, selector };
-        }
+        if ((await locator.count()) > 0 && (await locator.isVisible())) return { locator, selector };
       } catch {}
     }
   }
@@ -169,122 +194,86 @@ async function findChatInput(page) {
 
 async function waitForChatInput(page) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < CHAT_DISCOVERY_TIMEOUT_MS) {
+  while (Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
     if (page.isClosed()) return null;
-    await clickAnyJoinButton(page); // Handles removal detection and "Join Audio" popups
+    await clickAnyJoinButton(page);
     const found = await findChatInput(page);
     if (found) return found;
     await clickChatButton(page);
     await triggerChatShortcut(page);
-    if (!(await safeWait(page, POLL_INTERVAL_MS))) return null;
+    if (!(await safeWait(page, CONFIG.pollIntervalMs))) return null;
   }
   return null;
 }
 
 (async () => {
   const meetingId = await getMeetingId();
+  const message = getArgValue("--message");
+
   while (true) {
     let browser;
     try {
-    browser = await chromium.launch({
-      headless: false, // keep visible for Zoom
-      args: ["--disable-blink-features=AutomationControlled"]
-    });
+      browser = await chromium.launch({ headless: false, args: ["--disable-blink-features=AutomationControlled"] });
+      const context = await browser.newContext();
+      const page = await context.newPage();
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
+      console.log("Opening Zoom...");
+      await page.goto(`https://app.zoom.us/wc/${meetingId}/join`, { waitUntil: "domcontentloaded" });
 
-    console.log("Opening Zoom...");
-    await page.goto(`https://app.zoom.us/wc/${meetingId}/join`, {
-      waitUntil: "domcontentloaded"
-    });
-
-    console.log("Waiting for join button...");
-    let joinStep1 = false;
-    for (let i = 0; i < 50; i++) {
-      if (await clickAnyJoinButton(page)) { joinStep1 = true; break; }
-      if (!(await safeWait(page, POLL_INTERVAL_MS))) return;
-    }
-
-    // ------------------------
-    // 2. Name input
-    // ------------------------
-    for (let i = 0; i < 30; i++) {
-      await checkAndHandleCaptcha(page);
-      const nameInput = page.locator("#input-for-name");
-      if (await nameInput.count()) {
-        await nameInput.fill(randomName());
-        break;
+      for (let i = 0; i < 50; i++) {
+        if (await clickAnyJoinButton(page)) break;
+        if (!(await safeWait(page, CONFIG.pollIntervalMs))) return;
       }
-      await safeWait(page, POLL_INTERVAL_MS);
-    }
 
-    for (let i = 0; i < 50; i++) {
-      if (await clickAnyJoinButton(page)) break;
-      await safeWait(page, POLL_INTERVAL_MS);
-    }
-    
-    console.log("Waiting for meeting UI...");
-    
-    // ------------------------
-    // 4. Wait for meeting UI
-    // ------------------------
-    // 5. Open chat
-    // ------------------------
-    let chatOpened = false;
-    for (let i = 0; i < 50; i++) {
-      await clickChatButton(page);
-      await triggerChatShortcut(page);
-      if (await findChatInput(page)) { chatOpened = true; break; }
-      if (!(await safeWait(page, POLL_INTERVAL_MS))) return;
-    }
-    
-    // ------------------------
-    // 6. Repeated paste + enter
-    // ------------------------
-    const chatTarget = await waitForChatInput(page);
-    if (!chatTarget) {
-      console.log("Chat box not found after retries. You may still be in waiting room, chat may be disabled, or Zoom UI may differ.");
-      return;
-    }
-
-    const { locator: chatBox, selector } = chatTarget;
-    await chatBox.click().catch(() => {});
-    console.log(`Chat input found using selector: ${selector}`);
-    console.log(`Chat spam loop started at ${REPEAT_SPEED_MS}ms speed.`);
-
-    let lastModalCheck = 0;
-    while (!page.isClosed()) {
-      if (Date.now() - lastModalCheck > 1000) {
-        await clickAnyJoinButton(page); // Periodic check for removal modal
-        lastModalCheck = Date.now();
+      for (let i = 0; i < 30; i++) {
+        await checkAndHandleCaptcha(page);
+        const nameInput = page.locator("#input-for-name");
+        if (await nameInput.count()) {
+          await nameInput.fill(randomName());
+          break;
+        }
+        await safeWait(page, CONFIG.pollIntervalMs);
       }
-      await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
-        await page.keyboard.press("ControlOrMeta+V").catch(() => {});
-      });
-      await chatBox.press("Enter", { delay: 0 }).catch(async () => {
-        await page.keyboard.press("Enter").catch(() => {});
-      });
-      if (!(await safeWait(page, REPEAT_SPEED_MS))) {
-        break;
+
+      for (let i = 0; i < 50; i++) {
+        if (await clickAnyJoinButton(page)) break;
+        await safeWait(page, CONFIG.pollIntervalMs);
       }
-    }
-    console.log("Page closed; stopped chat loop.");
-    break;
-  } catch (error) {
-    if (error.message === "RESTART_CYCLE") {
-      console.log("Detected removal or waiting room. Restarting cycle...");
-      continue;
-    }
-    if (String(error).includes("Target page, context or browser has been closed")) {
-      console.log("Page/browser closed during automation. Exiting cleanly.");
+
+      const chatTarget = await waitForChatInput(page);
+      if (!chatTarget) {
+        console.log("Chat box not found after retries.");
+        return;
+      }
+
+      const { locator: chatBox, selector } = chatTarget;
+      await chatBox.click().catch(() => {});
+      console.log(`Chat input found using selector: ${selector}`);
+
+      while (!page.isClosed()) {
+        await clickAnyJoinButton(page);
+        if (message) {
+          await chatBox.fill(message).catch(() => {});
+        } else {
+          await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
+            await page.keyboard.press("ControlOrMeta+V").catch(() => {});
+          });
+        }
+        await chatBox.press("Enter", { delay: 0 }).catch(async () => {
+          await page.keyboard.press("Enter").catch(() => {});
+        });
+        if (!(await safeWait(page, CONFIG.repeatSpeedMs))) break;
+      }
       break;
+    } catch (error) {
+      if (error.message === "RESTART_CYCLE") {
+        console.log("Detected removal/waiting room. Restarting cycle...");
+        continue;
+      }
+      if (String(error).includes("Target page, context or browser has been closed")) break;
+      throw error;
+    } finally {
+      if (browser && browser.isConnected()) await browser.close().catch(() => {});
     }
-    throw error;
-  } finally {
-    if (browser && browser.isConnected()) {
-      await browser.close().catch(() => {});
-    }
-  }
   }
 })();

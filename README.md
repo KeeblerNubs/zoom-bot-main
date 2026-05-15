@@ -1,0 +1,79 @@
+# Zoom Bot (Playwright)
+
+## What changed for speed/efficiency
+- Faster loop defaults with small non-zero polling (`POLL_INTERVAL_MS=60`) to avoid CPU thrash.
+- Reduced repeated frame-scanning overhead via configurable frame cap (`MAX_FRAME_SCAN`, default 3).
+- Optional OCR mode (`--ocr`) using local `tesseract` binary for fallback state detection (e.g., waiting room text when DOM selectors fail).
+- Better message input path: `--message "..."` uses direct textbox fill + Enter (faster/reliable than paste-only).
+
+---
+
+## Prerequisites
+- Node.js 18+
+- npm
+- Chromium dependencies for Playwright
+- Optional OCR:
+  - `tesseract` CLI installed and available in PATH
+
+### Install tesseract
+- Ubuntu/Debian:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y tesseract-ocr
+  ```
+- macOS (Homebrew):
+  ```bash
+  brew install tesseract
+  ```
+- Windows (Chocolatey):
+  ```powershell
+  choco install tesseract
+  ```
+
+---
+
+## Setup walkthrough
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Install Playwright Chromium (if not already present):
+   ```bash
+   npx playwright install chromium
+   ```
+3. (Optional) Confirm OCR support:
+   ```bash
+   tesseract --version
+   ```
+4. Run bot with meeting ID:
+   ```bash
+   node zoom-bot.js 123456789
+   ```
+5. Run with explicit message input (recommended over clipboard):
+   ```bash
+   node zoom-bot.js 123456789 --message "hello world"
+   ```
+6. Run with OCR fallback enabled:
+   ```bash
+   node zoom-bot.js 123456789 --message "hello" --ocr
+   ```
+
+---
+
+## Runtime tuning
+Use environment variables:
+
+```bash
+REPEAT_SPEED_MS=80 POLL_INTERVAL_MS=60 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAME_SCAN=3 node zoom-bot.js 123456789 --message "ping"
+```
+
+- `REPEAT_SPEED_MS`: delay between sends (higher = slower, lower CPU/network burst)
+- `POLL_INTERVAL_MS`: UI polling interval
+- `CHAT_DISCOVERY_TIMEOUT_MS`: max wait for chat input
+- `MAX_FRAME_SCAN`: number of frames scanned per cycle
+
+---
+
+## Notes
+- OCR is fallback-only; normal DOM selector flow is still primary and faster.
+- If `--message` is not provided, bot falls back to clipboard paste (`Ctrl/Cmd+V`) then Enter.
