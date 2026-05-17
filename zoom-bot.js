@@ -23,7 +23,7 @@ let lastScrollLogTime = 0;
 let maintenanceTick = 0;
 let lastOcrCheck = 0;
 
-function randomName() {
+function fallbackName() {
   const names = ["Mundy", "Jake", "slmpig", "Nathan", "Intelll"];
   return names[Math.floor(Math.random() * names.length)];
 }
@@ -210,6 +210,7 @@ async function waitForChatInput(page) {
 (async () => {
   const meetingId = await getMeetingId();
   const message = getArgValue("--message");
+  const displayName = getArgValue("--name") || fallbackName();
 
   while (true) {
     let browser;
@@ -230,7 +231,7 @@ async function waitForChatInput(page) {
         await checkAndHandleCaptcha(page);
         const nameInput = page.locator("#input-for-name");
         if (await nameInput.count()) {
-          await nameInput.fill(randomName());
+          await nameInput.fill(displayName);
           break;
         }
         await safeWait(page, CONFIG.pollIntervalMs);
