@@ -1,0 +1,12 @@
+services:
+  telegram-zoom-bot:
+    build: .
+    container_name: telegram-zoom-bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      ZOOM_CHAT_MESSAGE: ${ZOOM_CHAT_MESSAGE:-}
+      REPEAT_SPEED_MS: ${REPEAT_SPEED_MS:-20}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-30}
+      CHAT_DISCOVERY_TIMEOUT_MS: ${CHAT_DISCOVERY_TIMEOUT_MS:-120000}
+      MAX_FRAME_SCAN: ${MAX_FRAME_SCAN:-2}
+    restart: unless-stopped

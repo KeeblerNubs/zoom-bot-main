@@ -77,3 +77,32 @@ REPEAT_SPEED_MS=20 POLL_INTERVAL_MS=30 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAM
 ## Notes
 - OCR is fallback-only; normal DOM selector flow is still primary and faster.
 - If `--message` is not provided, bot falls back to clipboard paste (`Ctrl/Cmd+V`) then Enter.
+
+---
+
+## Telegram Bot + Docker Compose
+
+You can run a Telegram relay bot that accepts a Zoom link or meeting ID and launches `zoom-bot.js` automatically.
+
+### 1) Configure env
+```bash
+cp .env.example .env
+# then edit .env and set TELEGRAM_BOT_TOKEN
+```
+
+### 2) Build and run
+```bash
+docker compose up --build -d
+```
+
+### 3) Use from Telegram
+Send your bot either:
+- `/join 1234567890`
+- `https://zoom.us/j/1234567890`
+- `https://app.zoom.us/wc/1234567890/join`
+
+The bot will respond when a run starts and when it finishes.
+
+### Notes
+- This container uses the official Playwright image (Chromium + dependencies preinstalled).
+- One active zoom run per Telegram chat is allowed at a time.
