@@ -11,6 +11,7 @@ if (!token) {
 }
 
 const activeRuns = new Map();
+const pendingMessages = new Map();
 let offset = 0;
 
 async function tg(method, params = {}) {
@@ -35,14 +36,21 @@ function extractMeetingId(text) {
   return normalizeMeetingId(text);
 }
 
+function telegramHandle(message) {
+  const username = String(message.from?.username || '').trim();
+  if (username) return `@${username}`;
+  const firstName = String(message.from?.first_name || '').trim();
+  return firstName || 'ZoomGuest';
+}
+
 async function send(chatId, text) {
   return tg('sendMessage', { chat_id: chatId, text });
 }
 
-function runZoomBot(chatId, meetingId) {
+function runZoomBot(chatId, meetingId, customMessage, name) {
   if (activeRuns.has(chatId)) return null;
-  const args = ['zoom-bot.js', meetingId];
-  if (defaultMessage) args.push('--message', defaultMessage);
+  const args = ['zoom-bot.js', meetingId, '--name', name];
+  if (customMessage) args.push('--message', customMessage);
 
   const child = spawn('xvfb-run', ['-a', 'node', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
   activeRuns.set(chatId, child);
@@ -64,7 +72,22 @@ async function handleMessage(message) {
   const text = String(message.text || '').trim();
 
   if (!text || /^\/start\b/i.test(text) || /^\/help\b/i.test(text)) {
-    await send(chatId, 'Send Zoom link or /join <meeting-id>.\nExample: /join 123 456 7890');
+    pendingMessages.delete(chatId);
+    await send(chatId, 'Send Zoom link or /join <meeting-id>. Then I will ask what message to send in Zoom chat.');
+    return;
+  }
+
+  if (activeRuns.has(chatId)) {
+    await send(chatId, 'A Zoom bot run is already active for this chat.');
+    return;
+  }
+
+  const pending = pendingMessages.get(chatId);
+  if (pending) {
+    pendingMessages.delete(chatId);
+    const customMessage = text || defaultMessage;
+    runZoomBot(chatId, pending.meetingId, customMessage, pending.displayName);
+    await send(chatId, `Starting Zoom bot for meeting ${pending.meetingId} as ${pending.displayName}.`);
     return;
   }
 
@@ -75,13 +98,11 @@ async function handleMessage(message) {
     return;
   }
 
-  if (activeRuns.has(chatId)) {
-    await send(chatId, 'A Zoom bot run is already active for this chat.');
-    return;
-  }
-
-  runZoomBot(chatId, meetingId);
-  await send(chatId, `Starting Zoom bot for meeting ${meetingId}...`);
+  pendingMessages.set(chatId, {
+    meetingId,
+    displayName: telegramHandle(message)
+  });
+  await send(chatId, 'What message do you want sent in Zoom chat?');
 }
 
 async function poll() {
