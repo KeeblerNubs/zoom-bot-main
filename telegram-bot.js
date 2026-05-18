@@ -36,13 +36,6 @@ function extractMeetingId(text) {
   return normalizeMeetingId(text);
 }
 
-function telegramHandle(message) {
-  const username = String(message.from?.username || '').trim();
-  if (username) return `@${username}`;
-  const firstName = String(message.from?.first_name || '').trim();
-  return firstName || 'ZoomGuest';
-}
-
 async function send(chatId, text) {
   return tg('sendMessage', { chat_id: chatId, text });
 }
@@ -84,6 +77,13 @@ async function handleMessage(message) {
 
   const pending = pendingMessages.get(chatId);
   if (pending) {
+    if (!pending.displayName) {
+      const displayName = text || 'ZoomGuest';
+      pendingMessages.set(chatId, { ...pending, displayName });
+      await send(chatId, 'What message do you want sent in Zoom chat?');
+      return;
+    }
+
     pendingMessages.delete(chatId);
     const customMessage = text || defaultMessage;
     runZoomBot(chatId, pending.meetingId, customMessage, pending.displayName);
@@ -100,9 +100,9 @@ async function handleMessage(message) {
 
   pendingMessages.set(chatId, {
     meetingId,
-    displayName: telegramHandle(message)
+    displayName: ''
   });
-  await send(chatId, 'What message do you want sent in Zoom chat?');
+  await send(chatId, 'What name should I use in Zoom?');
 }
 
 async function poll() {
