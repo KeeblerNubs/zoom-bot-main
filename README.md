@@ -71,6 +71,33 @@ REPEAT_SPEED_MS=20 POLL_INTERVAL_MS=30 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAM
 - `POLL_INTERVAL_MS`: UI polling interval
 - `CHAT_DISCOVERY_TIMEOUT_MS`: max wait for chat input
 - `MAX_FRAME_SCAN`: number of frames scanned per cycle
+- `MAX_RUNTIME_MS`: hard runtime cap; bot exits once reached (0 = disabled)
+- `MAX_MESSAGES`: total messages to send before exiting (0 = disabled)
+- `MAX_RESTART_CYCLES`: max waiting-room/removal restart cycles (0 = disabled)
+- `GRACEFUL_SHUTDOWN_MS`: delay before final process exit after stop request
+
+---
+
+## Failsafes and run controls
+
+The bot now supports explicit stop controls so it can shut down safely instead of running forever:
+
+```bash
+node zoom-bot.js 123456789 \
+  --message "ping" \
+  --max-messages 25 \
+  --max-runtime-sec 600 \
+  --max-restarts 5
+```
+
+Optional flags:
+- `--max-messages <N>`: stop after N sent messages.
+- `--max-runtime-sec <N>`: stop after N seconds.
+- `--max-restarts <N>`: stop after N restart cycles triggered by waiting-room/removal detection.
+- `--stop-at <ISO-8601>`: stop at a specific absolute UTC/local timestamp (example: `2026-05-18T20:30:00Z`).
+
+Signals:
+- `SIGINT` / `SIGTERM` trigger a graceful stop path (browser closes cleanly, then process exits).
 
 ---
 
