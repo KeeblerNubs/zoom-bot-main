@@ -16,12 +16,25 @@ const CONFIG = {
   chatDiscoveryTimeoutMs: Number(process.env.CHAT_DISCOVERY_TIMEOUT_MS || 120000),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30),
   maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 2),
-  useOcr: process.argv.includes("--ocr")
+  useOcr: process.argv.includes("--ocr"),
+  maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
+  maxMessages: Number(process.env.MAX_MESSAGES || 0),
+  maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),
+  gracefulShutdownMs: Number(process.env.GRACEFUL_SHUTDOWN_MS || 4000)
 };
 
 let lastScrollLogTime = 0;
 let maintenanceTick = 0;
 let lastOcrCheck = 0;
+let shouldStop = false;
+let stopReason = "";
+
+function requestStop(reason = "stop requested") {
+  if (shouldStop) return;
+  shouldStop = true;
+  stopReason = reason;
+  console.log(`[failsafe] ${reason}`);
+}
 
 function fallbackName() {
   const names = ["Mundy", "Jake", "slmpig", "Nathan", "Intelll"];
@@ -37,6 +50,13 @@ function getArgValue(flag) {
   const index = process.argv.indexOf(flag);
   if (index === -1 || index + 1 >= process.argv.length) return "";
   return String(process.argv[index + 1] || "").trim();
+}
+
+function getNumericArgValue(flag) {
+  const raw = getArgValue(flag);
+  if (!raw) return 0;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 async function getMeetingId() {
@@ -57,6 +77,7 @@ async function getMeetingId() {
 }
 
 async function safeWait(page, ms) {
+  if (shouldStop) return false;
   if (page.isClosed()) return false;
   if (ms <= 0) return true;
   try {
@@ -195,7 +216,7 @@ async function findChatInput(page) {
 
 async function waitForChatInput(page) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
+  while (!shouldStop && Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
     if (page.isClosed()) return null;
     await clickAnyJoinButton(page);
     const found = await findChatInput(page);
@@ -211,10 +232,28 @@ async function waitForChatInput(page) {
   const meetingId = await getMeetingId();
   const message = getArgValue("--message");
   const displayName = getArgValue("--name") || fallbackName();
+  const stopAtIso = getArgValue("--stop-at");
+  const maxMessagesArg = getNumericArgValue("--max-messages");
+  const maxRuntimeArgSeconds = getNumericArgValue("--max-runtime-sec");
+  const maxRestartsArg = getNumericArgValue("--max-restarts");
+  let sentMessages = 0;
+  let restartCount = 0;
+  const startedAt = Date.now();
+  const maxRuntimeMs = maxRuntimeArgSeconds > 0 ? maxRuntimeArgSeconds * 1000 : CONFIG.maxRuntimeMs;
+  const maxMessages = maxMessagesArg > 0 ? maxMessagesArg : CONFIG.maxMessages;
+  const maxRestartCycles = maxRestartsArg > 0 ? maxRestartsArg : CONFIG.maxRestartCycles;
+  const stopAtMs = stopAtIso ? Date.parse(stopAtIso) : NaN;
 
-  while (true) {
+  process.on("SIGINT", () => requestStop("SIGINT received"));
+  process.on("SIGTERM", () => requestStop("SIGTERM received"));
+
+  while (!shouldStop) {
     let browser;
     try {
+      if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
+      if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
+      if (shouldStop) break;
+
       browser = await chromium.launch({ headless: false, args: ["--disable-blink-features=AutomationControlled"] });
       const context = await browser.newContext();
       const page = await context.newPage();
@@ -252,7 +291,9 @@ async function waitForChatInput(page) {
       await chatBox.click().catch(() => {});
       console.log(`Chat input found using selector: ${selector}`);
 
-      while (!page.isClosed()) {
+      while (!shouldStop && !page.isClosed()) {
+        if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
+        if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
         if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page);
         if (message) {
           await chatBox.fill(message).catch(() => {});
@@ -264,11 +305,21 @@ async function waitForChatInput(page) {
         await chatBox.press("Enter", { delay: 0 }).catch(async () => {
           await page.keyboard.press("Enter").catch(() => {});
         });
+        sentMessages += 1;
+        if (maxMessages > 0 && sentMessages >= maxMessages) {
+          requestStop(`max messages reached (${maxMessages})`);
+          break;
+        }
         if (!(await safeWait(page, CONFIG.repeatSpeedMs))) break;
       }
       break;
     } catch (error) {
       if (error.message === "RESTART_CYCLE") {
+        restartCount += 1;
+        if (maxRestartCycles > 0 && restartCount > maxRestartCycles) {
+          requestStop(`max restart cycles reached (${maxRestartCycles})`);
+          break;
+        }
         console.log("Detected removal/waiting room. Restarting cycle...");
         continue;
       }
@@ -276,6 +327,12 @@ async function waitForChatInput(page) {
       throw error;
     } finally {
       if (browser && browser.isConnected()) await browser.close().catch(() => {});
+      if (shouldStop && CONFIG.gracefulShutdownMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
+      }
     }
+  }
+  if (shouldStop) {
+    console.log(`Stopped safely: ${stopReason || "stop requested"}`);
   }
 })();
