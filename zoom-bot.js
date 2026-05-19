@@ -188,7 +188,10 @@ async function clickChatButton(page) {
 }
 
 async function triggerChatShortcut(page) {
+  // Zoom web commonly uses Alt+H for chat (Windows/Linux layouts may vary),
+  // so we try it first and then a shifted fallback.
   await page.keyboard.press("Alt+h", { delay: 0 }).catch(() => {});
+  await page.keyboard.press("Alt+Shift+h", { delay: 0 }).catch(() => {});
   if (!CONFIG.turboMode) await safeWait(page, 250);
 }
 
