@@ -130,6 +130,20 @@ Send your bot either:
 
 The bot will respond when a run starts and when it finishes.
 
+
+### Slash commands (Settings, Controls, Special Features)
+The Telegram bot supports slash commands to configure runtime behavior per chat:
+
+- `/settings` — view current settings
+- `/ocr on|off` — toggle OCR fallback mode
+- `/max_messages <N>` — stop after N sent messages (`0` disables)
+- `/max_runtime <seconds>` — stop after N seconds (`0` disables)
+- `/max_restarts <N>` — stop after N restart cycles (`0` disables)
+- `/status` — check whether a run is active
+- `/stop` — stop the active run
+
+These settings are chat-scoped and applied to the next `/join` launch.
+
 ### Notes
 - This container uses the official Playwright image (Chromium + dependencies preinstalled).
 - One active zoom run per Telegram chat is allowed at a time.
