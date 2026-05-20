@@ -47,9 +47,14 @@ function normalizeMeetingId(value) {
 }
 
 function extractMeetingId(text) {
-  const linkMatch = String(text).match(/\/(?:wc|j)\/(\d{9,})/i);
+  const normalized = String(text || '').trim();
+  const linkMatch = normalized.match(/\/(?:wc|j|w)\/(\d{9,})/i);
   if (linkMatch) return linkMatch[1];
-  return normalizeMeetingId(text);
+
+  const confParamMatch = normalized.match(/[?&]confno=(\d{9,})/i);
+  if (confParamMatch) return confParamMatch[1];
+
+  return normalizeMeetingId(normalized);
 }
 
 async function send(chatId, text) {
@@ -196,6 +201,11 @@ async function handleMessage(message) {
   if (text.startsWith('/')) {
     const handled = await handleSlashCommand(chatId, text);
     if (handled) return;
+
+    if (/^\/join\s*$/i.test(text)) {
+      await send(chatId, 'Usage: /join <meeting-id-or-zoom-link>\nExample: /join 1234567890');
+      return;
+    }
   }
 
   if (activeRuns.has(chatId)) {
@@ -223,7 +233,7 @@ async function handleMessage(message) {
     return;
   }
 
-  const payload = text.replace(/^\/join\s+/i, '');
+  const payload = text.replace(/^\/join\s*/i, '');
   const meetingId = extractMeetingId(payload);
   if (!meetingId) {
     await send(chatId, 'Could not parse a valid Zoom meeting ID. Try /help for command usage.');
