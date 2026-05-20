@@ -8,7 +8,7 @@
   "main": "zoom-bot.js",
   "devDependencies": {},
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --check zoom-bot.js && node --check telegram-bot.js",
     "start": "node zoom-bot.js",
     "start:telegram": "node telegram-bot.js"
   },
