@@ -163,7 +163,26 @@ async function checkAndHandleCaptcha(page) {
   return false;
 }
 
+
+async function clickJoinFromBrowser(page) {
+  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  for (const frame of frames) {
+    if (
+      (await clickFirstVisible(frame.getByRole("link", { name: /join from (your )?browser/i }))) ||
+      (await clickFirstVisible(frame.getByRole("button", { name: /join from (your )?browser/i }))) ||
+      (await clickFirstVisible(frame.locator('a:has-text("Join from Your Browser")'))) ||
+      (await clickFirstVisible(frame.locator('[data-testid*="join-browser" i]')))
+    ) {
+      console.log("Opened Zoom web client (Join from browser).");
+      return true;
+    }
+  }
+  return false;
+}
+
 async function clickAnyJoinButton(page) {
+  // Ensure we switch from the native-app prompt to web client when presented.
+  await clickJoinFromBrowser(page);
   await checkAndHandleCaptcha(page);
 
   const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
@@ -300,7 +319,24 @@ async function waitForChatInput(page) {
 
       const { page } = activeShells[0];
       console.log(`Opening Zoom with ${headlessShells} headless shell(s)...`);
-      await page.goto(`https://app.zoom.us/wc/${meetingId}/join`, { waitUntil: "domcontentloaded" });
+
+      const joinUrls = [
+        `https://app.zoom.us/wc/${meetingId}/join`,
+        `https://app.zoom.us/wc/join/${meetingId}`,
+        `https://zoom.us/wc/${meetingId}/join`
+      ];
+      let joinLoaded = false;
+      for (const joinUrl of joinUrls) {
+        try {
+          await page.goto(joinUrl, { waitUntil: "domcontentloaded" });
+          joinLoaded = true;
+          console.log(`Loaded join page: ${joinUrl}`);
+          break;
+        } catch (error) {
+          console.log(`Failed join URL ${joinUrl}: ${error.message}`);
+        }
+      }
+      if (!joinLoaded) throw new Error("Could not load any Zoom web join URL");
 
       for (let i = 0; i < 50; i++) {
         if (await clickAnyJoinButton(page)) break;
