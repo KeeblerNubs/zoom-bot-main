@@ -107,6 +107,99 @@ Signals:
 
 ---
 
+
+## AWS Ubuntu Server setup (EC2)
+
+Use this if you want the bot running 24/7 on an Ubuntu EC2 instance.
+
+### 1) Create/connect to server
+- Launch an **Ubuntu 22.04 or 24.04** EC2 instance.
+- SSH in:
+  ```bash
+  ssh -i /path/to/key.pem ubuntu@<EC2_PUBLIC_IP>
+  ```
+
+### 2) Install system dependencies
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates
+```
+
+Install Node.js 20 LTS:
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node -v
+npm -v
+```
+
+### 3) Clone and install app
+```bash
+git clone <YOUR_REPO_URL>
+cd zoom-bot-main
+npm ci
+```
+
+Install Playwright Chromium + Linux deps:
+```bash
+npx playwright install --with-deps chromium
+```
+
+Optional OCR support:
+```bash
+sudo apt-get install -y tesseract-ocr
+```
+
+### 4) Configure environment
+```bash
+cp .env.example .env
+nano .env
+```
+Set at least `TELEGRAM_BOT_TOKEN` in `.env` for Telegram mode.
+
+### 5) Smoke test
+```bash
+node telegram-bot.js
+```
+Press `Ctrl+C` after verifying startup logs.
+
+### 6) Run as a systemd service (recommended)
+Create `/etc/systemd/system/zoom-telegram-bot.service`:
+```ini
+[Unit]
+Description=Zoom Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/zoom-bot-main
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /home/ubuntu/zoom-bot-main/telegram-bot.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable zoom-telegram-bot
+sudo systemctl start zoom-telegram-bot
+```
+
+Check logs/status:
+```bash
+sudo systemctl status zoom-telegram-bot
+journalctl -u zoom-telegram-bot -f
+```
+
+### 7) Open security group rules
+- Inbound SSH (22) from your IP only.
+- No inbound HTTP ports are required for polling-based Telegram mode.
+
 ## Telegram Bot + Docker Compose
 
 You can run a Telegram relay bot that accepts a Zoom link or meeting ID and launches `zoom-bot.js` automatically.
