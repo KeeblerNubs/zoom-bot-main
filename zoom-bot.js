@@ -229,6 +229,17 @@ async function findChatInput(page) {
   return null;
 }
 
+
+async function createFreshShell() {
+  const userDataDir = await mkdtemp(path.join(os.tmpdir(), "zoom-shell-profile-"));
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"]
+  });
+  const page = context.pages()[0] || await context.newPage();
+  return { context, page, userDataDir };
+}
+
 async function waitForChatInput(page) {
   const startedAt = Date.now();
   while (!shouldStop && Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
@@ -270,10 +281,8 @@ async function waitForChatInput(page) {
       if (shouldStop) break;
 
       for (let shellIndex = 0; shellIndex < headlessShells; shellIndex += 1) {
-        const browser = await chromium.launch({ headless: true, args: ["--disable-blink-features=AutomationControlled"] });
-        const context = await browser.newContext();
-        const page = await context.newPage();
-        activeShells.push({ browser, page });
+        const shell = await createFreshShell();
+        activeShells.push(shell);
       }
 
       const { page } = activeShells[0];
@@ -346,7 +355,8 @@ async function waitForChatInput(page) {
       throw error;
     } finally {
       for (const shell of activeShells) {
-        if (shell.browser && shell.browser.isConnected()) await shell.browser.close().catch(() => {});
+        if (shell.context) await shell.context.close().catch(() => {});
+        if (shell.userDataDir) await rm(shell.userDataDir, { recursive: true, force: true }).catch(() => {});
       }
       if (shouldStop && CONFIG.gracefulShutdownMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
