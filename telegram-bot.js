@@ -13,6 +13,7 @@ if (!token) {
 }
 
 const MAX_MESSAGE_CHARS = 1000;
+const MAX_LOG_CHARS = 12000;
 
 const activeRuns = new Map();
 const pendingMessages = new Map();
@@ -89,13 +90,25 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
   const child = spawn('xvfb-run', ['-a', 'node', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
   activeRuns.set(chatId, child);
 
-  let lastOutput = '';
-  child.stdout.on('data', (buf) => { lastOutput = String(buf).trim() || lastOutput; });
-  child.stderr.on('data', (buf) => { lastOutput = String(buf).trim() || lastOutput; });
+  let detailedLogs = '';
+  const appendLogs = (source, buf) => {
+    const text = String(buf || '');
+    if (!text) return;
+    detailedLogs += `[${source}] ${text}`;
+    if (detailedLogs.length > MAX_LOG_CHARS) {
+      detailedLogs = detailedLogs.slice(-MAX_LOG_CHARS);
+    }
+  };
 
-  child.on('close', () => {
+  child.stdout.on('data', (buf) => appendLogs('stdout', buf));
+  child.stderr.on('data', (buf) => appendLogs('stderr', buf));
+
+  child.on('close', (code, signal) => {
     activeRuns.delete(chatId);
-    send(chatId, `Zoom bot finished for meeting ${meetingId}.${lastOutput ? `\nLast log: ${lastOutput.slice(0, 300)}` : ''}`).catch(() => {});
+    const status = signal ? `signal ${signal}` : `exit code ${code}`;
+    const logSuffix = detailedLogs.trim() ? `\nLogs (latest ${MAX_LOG_CHARS} chars):\n${detailedLogs.trim()}` : '';
+    const { message } = clampMessage(`Zoom bot finished for meeting ${meetingId} (${status}).${logSuffix}`);
+    send(chatId, message).catch(() => {});
   });
 
   return child;
