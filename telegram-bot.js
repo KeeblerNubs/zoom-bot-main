@@ -30,6 +30,7 @@ function getSettings(chatId) {
   if (!chatSettings.has(chatId)) {
     chatSettings.set(chatId, {
       ocr: false,
+      headlessShells: 1,
       maxMessages: 0,
       maxRuntimeSec: 0,
       maxRestarts: 0
@@ -59,6 +60,7 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
   const args = ['zoom-bot.js', meetingId, '--name', name];
   if (customMessage) args.push('--message', customMessage);
   if (settings.ocr) args.push('--ocr');
+  if (settings.headlessShells > 1) args.push('--headless-shells', String(settings.headlessShells));
   if (settings.maxMessages > 0) args.push('--max-messages', String(settings.maxMessages));
   if (settings.maxRuntimeSec > 0) args.push('--max-runtime-sec', String(settings.maxRuntimeSec));
   if (settings.maxRestarts > 0) args.push('--max-restarts', String(settings.maxRestarts));
@@ -83,6 +85,7 @@ function settingsSummary(chatId) {
   return [
     'Settings:',
     `- OCR: ${s.ocr ? 'ON' : 'OFF'}`,
+    `- headless-shells: ${s.headlessShells}`,
     `- max-messages: ${s.maxMessages || 'disabled'}`,
     `- max-runtime-sec: ${s.maxRuntimeSec || 'disabled'}`,
     `- max-restarts: ${s.maxRestarts || 'disabled'}`
@@ -104,6 +107,7 @@ async function handleSlashCommand(chatId, text) {
         'Special slash commands:',
         '/settings - view current controls',
         '/ocr on|off - toggle OCR mode',
+        '/headless_shells <N> - set parallel headless shells (min 1)',
         '/max_messages <N> - stop after N messages (0 disables)',
         '/max_runtime <seconds> - stop after N seconds (0 disables)',
         '/max_restarts <N> - stop after N restarts (0 disables)',
@@ -130,6 +134,7 @@ async function handleSlashCommand(chatId, text) {
   }
 
   const numericCommands = {
+    '/headless_shells': 'headlessShells',
     '/max_messages': 'maxMessages',
     '/max_runtime': 'maxRuntimeSec',
     '/max_restarts': 'maxRestarts'
@@ -139,6 +144,10 @@ async function handleSlashCommand(chatId, text) {
     const n = Number(arg);
     if (!Number.isInteger(n) || n < 0) {
       await send(chatId, `Usage: ${command} <non-negative integer>`);
+      return true;
+    }
+    if (command === '/headless_shells' && n < 1) {
+      await send(chatId, 'Usage: /headless_shells <integer >= 1>');
       return true;
     }
     settings[numericCommands[command]] = n;

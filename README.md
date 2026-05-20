@@ -229,6 +229,7 @@ The Telegram bot supports slash commands to configure runtime behavior per chat:
 
 - `/settings` — view current settings
 - `/ocr on|off` — toggle OCR fallback mode
+- `/headless_shells <N>` — choose how many headless browser shells run in parallel (minimum `1`)
 - `/max_messages <N>` — stop after N sent messages (`0` disables)
 - `/max_runtime <seconds>` — stop after N seconds (`0` disables)
 - `/max_restarts <N>` — stop after N restart cycles (`0` disables)
