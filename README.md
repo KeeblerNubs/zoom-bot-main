@@ -175,6 +175,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/zoom-bot-main
 Environment=NODE_ENV=production
+EnvironmentFile=/home/ubuntu/zoom-bot-main/.env
 ExecStart=/usr/bin/node /home/ubuntu/zoom-bot-main/telegram-bot.js
 Restart=always
 RestartSec=5
@@ -241,3 +242,7 @@ These settings are chat-scoped and applied to the next `/join` launch.
 ### Notes
 - This container uses the official Playwright image (Chromium + dependencies preinstalled).
 - One active zoom run per Telegram chat is allowed at a time.
+
+
+### Troubleshooting: `Cannot find module 'dotenv/config'` in systemd logs
+If your unit sets `NODE_OPTIONS=--require dotenv/config`, remove that line. The bot now loads `.env` on startup without preloading `dotenv/config`. Keep `EnvironmentFile=/home/ubuntu/zoom-bot-main/.env` in the unit instead.

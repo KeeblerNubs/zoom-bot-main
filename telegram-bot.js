@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+const { loadEnvFromFile } = require('./env-loader');
+loadEnvFromFile();
 const { spawn } = require('node:child_process');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
