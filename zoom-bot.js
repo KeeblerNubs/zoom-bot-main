@@ -59,18 +59,30 @@ function getNumericArgValue(flag) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-async function getMeetingId() {
+async function getSetupOptions() {
   const fromArg = normalizeMeetingId(process.argv[2]);
-  if (fromArg) return fromArg;
+  const shellCountArg = getNumericArgValue("--headless-shells");
+  if (fromArg) {
+    return {
+      meetingId: fromArg,
+      headlessShells: shellCountArg > 0 ? shellCountArg : 1
+    };
+  }
 
   const rl = readline.createInterface({ input, output });
   try {
-    while (true) {
+    let meetingId = "";
+    while (!meetingId) {
       const entered = await rl.question("Enter Zoom meeting ID: ");
-      const meetingId = normalizeMeetingId(entered);
-      if (meetingId) return meetingId;
-      console.log("Invalid meeting ID. Please enter at least 9 digits.");
+      meetingId = normalizeMeetingId(entered);
+      if (!meetingId) console.log("Invalid meeting ID. Please enter at least 9 digits.");
     }
+
+    const shellsAnswer = await rl.question("How many headless shells should run in parallel? (default: 1): ");
+    const parsedShellCount = Number(shellsAnswer);
+    const headlessShells = Number.isFinite(parsedShellCount) && parsedShellCount > 0 ? Math.floor(parsedShellCount) : 1;
+
+    return { meetingId, headlessShells };
   } finally {
     rl.close();
   }
@@ -232,7 +244,7 @@ async function waitForChatInput(page) {
 }
 
 (async () => {
-  const meetingId = await getMeetingId();
+  const { meetingId, headlessShells } = await getSetupOptions();
   const message = getArgValue("--message");
   const displayName = getArgValue("--name") || fallbackName();
   const stopAtIso = getArgValue("--stop-at");
@@ -251,17 +263,21 @@ async function waitForChatInput(page) {
   process.on("SIGTERM", () => requestStop("SIGTERM received"));
 
   while (!shouldStop) {
-    let browser;
+    const activeShells = [];
     try {
       if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
       if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
       if (shouldStop) break;
 
-      browser = await chromium.launch({ headless: false, args: ["--disable-blink-features=AutomationControlled"] });
-      const context = await browser.newContext();
-      const page = await context.newPage();
+      for (let shellIndex = 0; shellIndex < headlessShells; shellIndex += 1) {
+        const browser = await chromium.launch({ headless: true, args: ["--disable-blink-features=AutomationControlled"] });
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        activeShells.push({ browser, page });
+      }
 
-      console.log("Opening Zoom...");
+      const { page } = activeShells[0];
+      console.log(`Opening Zoom with ${headlessShells} headless shell(s)...`);
       await page.goto(`https://app.zoom.us/wc/${meetingId}/join`, { waitUntil: "domcontentloaded" });
 
       for (let i = 0; i < 50; i++) {
@@ -329,7 +345,9 @@ async function waitForChatInput(page) {
       if (String(error).includes("Target page, context or browser has been closed")) break;
       throw error;
     } finally {
-      if (browser && browser.isConnected()) await browser.close().catch(() => {});
+      for (const shell of activeShells) {
+        if (shell.browser && shell.browser.isConnected()) await shell.browser.close().catch(() => {});
+      }
       if (shouldStop && CONFIG.gracefulShutdownMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
       }
