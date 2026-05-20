@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { loadEnvFromFile } = require('./env-loader');
 loadEnvFromFile();
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const defaultMessage = process.env.ZOOM_CHAT_MESSAGE || '';
@@ -76,6 +76,15 @@ function clampMessage(text) {
   };
 }
 
+
+function buildZoomCommand(args) {
+  const xvfbAvailable = spawnSync('xvfb-run', ['--help'], { stdio: 'ignore' }).status !== null;
+  if (xvfbAvailable) {
+    return { command: 'xvfb-run', launchArgs: ['-a', 'node', ...args] };
+  }
+  return { command: 'node', launchArgs: args };
+}
+
 function runZoomBot(chatId, meetingId, customMessage, name) {
   if (activeRuns.has(chatId)) return null;
   const settings = getSettings(chatId);
@@ -87,7 +96,8 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
   if (settings.maxRuntimeSec > 0) args.push('--max-runtime-sec', String(settings.maxRuntimeSec));
   if (settings.maxRestarts > 0) args.push('--max-restarts', String(settings.maxRestarts));
 
-  const child = spawn('xvfb-run', ['-a', 'node', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+  const { command, launchArgs } = buildZoomCommand(args);
+  const child = spawn(command, launchArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
   activeRuns.set(chatId, child);
 
   let detailedLogs = '';
@@ -102,6 +112,12 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
 
   child.stdout.on('data', (buf) => appendLogs('stdout', buf));
   child.stderr.on('data', (buf) => appendLogs('stderr', buf));
+
+  child.on('error', (error) => {
+    activeRuns.delete(chatId);
+    const { message } = clampMessage(`Failed to start Zoom bot for meeting ${meetingId}: ${error.message}`);
+    send(chatId, message).catch(() => {});
+  });
 
   child.on('close', (code, signal) => {
     activeRuns.delete(chatId);
