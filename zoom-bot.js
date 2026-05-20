@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+const { loadEnvFromFile } = require('./env-loader');
+loadEnvFromFile();
 const { chromium } = require("playwright");
 const readline = require("node:readline/promises");
 const { stdin: input, stdout: output } = require("node:process");
