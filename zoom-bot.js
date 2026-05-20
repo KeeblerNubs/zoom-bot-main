@@ -46,6 +46,17 @@ function normalizeMeetingId(value) {
   return digitsOnly.length >= 9 ? digitsOnly : "";
 }
 
+function extractMeetingId(value) {
+  const normalized = String(value || "").trim();
+  const linkMatch = normalized.match(/\/(?:wc|j|w)\/(\d{9,})/i);
+  if (linkMatch) return linkMatch[1];
+
+  const confParamMatch = normalized.match(/[?&]confno=(\d{9,})/i);
+  if (confParamMatch) return confParamMatch[1];
+
+  return normalizeMeetingId(normalized);
+}
+
 function getArgValue(flag) {
   const index = process.argv.indexOf(flag);
   if (index === -1 || index + 1 >= process.argv.length) return "";
@@ -60,7 +71,7 @@ function getNumericArgValue(flag) {
 }
 
 async function getSetupOptions() {
-  const fromArg = normalizeMeetingId(process.argv[2]);
+  const fromArg = extractMeetingId(process.argv[2]);
   const shellCountArg = getNumericArgValue("--headless-shells");
   if (fromArg) {
     return {
@@ -73,9 +84,9 @@ async function getSetupOptions() {
   try {
     let meetingId = "";
     while (!meetingId) {
-      const entered = await rl.question("Enter Zoom meeting ID: ");
-      meetingId = normalizeMeetingId(entered);
-      if (!meetingId) console.log("Invalid meeting ID. Please enter at least 9 digits.");
+      const entered = await rl.question("Enter Zoom meeting ID or link: ");
+      meetingId = extractMeetingId(entered);
+      if (!meetingId) console.log("Invalid meeting ID/link. Please enter a Zoom link or at least 9 digits.");
     }
 
     const shellsAnswer = await rl.question("How many headless shells should run in parallel? (default: 1): ");
