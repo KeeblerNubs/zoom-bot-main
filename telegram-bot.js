@@ -10,6 +10,8 @@ if (!token) {
   process.exit(1);
 }
 
+const MAX_MESSAGE_CHARS = 1000;
+
 const activeRuns = new Map();
 const pendingMessages = new Map();
 const chatSettings = new Map();
@@ -52,6 +54,18 @@ function extractMeetingId(text) {
 
 async function send(chatId, text) {
   return tg('sendMessage', { chat_id: chatId, text });
+}
+
+function clampMessage(text) {
+  const value = String(text || '');
+  if (value.length <= MAX_MESSAGE_CHARS) {
+    return { message: value, truncated: false, originalLength: value.length };
+  }
+  return {
+    message: value.slice(0, MAX_MESSAGE_CHARS),
+    truncated: true,
+    originalLength: value.length
+  };
 }
 
 function runZoomBot(chatId, meetingId, customMessage, name) {
@@ -200,8 +214,12 @@ async function handleMessage(message) {
 
     pendingMessages.delete(chatId);
     const customMessage = text || defaultMessage;
-    runZoomBot(chatId, pending.meetingId, customMessage, pending.displayName);
+    const clamped = clampMessage(customMessage);
+    runZoomBot(chatId, pending.meetingId, clamped.message, pending.displayName);
     await send(chatId, `Starting Zoom bot for meeting ${pending.meetingId} as ${pending.displayName}.`);
+    if (clamped.truncated) {
+      await send(chatId, `Message was truncated to ${MAX_MESSAGE_CHARS} characters (received ${clamped.originalLength}).`);
+    }
     return;
   }
 
