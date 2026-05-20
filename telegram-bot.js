@@ -202,7 +202,7 @@ async function handleMessage(message) {
     const handled = await handleSlashCommand(chatId, text);
     if (handled) return;
 
-    if (/^\/join\s*$/i.test(text)) {
+    if (/^\/join(?:\?.*)?\s*$/i.test(text)) {
       await send(chatId, 'Usage: /join <meeting-id-or-zoom-link>\nExample: /join 1234567890');
       return;
     }
@@ -233,7 +233,7 @@ async function handleMessage(message) {
     return;
   }
 
-  const payload = text.replace(/^\/join\s*/i, '');
+  const payload = text.replace(/^\/join(?:\?.*?)?\s*/i, '');
   const meetingId = extractMeetingId(payload);
   if (!meetingId) {
     await send(chatId, 'Could not parse a valid Zoom meeting ID. Try /help for command usage.');
