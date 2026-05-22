@@ -180,10 +180,22 @@ async function clickJoinFromBrowser(page) {
   return false;
 }
 
+async function clickDisclaimerAgree(page) {
+  const frames = page.frames();
+  for (const frame of frames) {
+    if (await clickFirstVisible(frame.locator('#disclaimer_agree'))) {
+      console.log('Accepted disclaimer.');
+      return true;
+    }
+  }
+  return false;
+}
+
 async function clickAnyJoinButton(page) {
   // Ensure we switch from the native-app prompt to web client when presented.
   await clickJoinFromBrowser(page);
   await checkAndHandleCaptcha(page);
+  await clickDisclaimerAgree(page);
 
   const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
   for (const frame of frames) {
@@ -196,7 +208,6 @@ async function clickAnyJoinButton(page) {
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
-        (await clickFirstVisible(frame.locator("#disclaimer_agree"))) ||
         (await clickFirstVisible(frame.getByRole("button", { name: /join|launch meeting|continue|audio|video|without/i }))) ||
         (await clickFirstVisible(frame.locator(".preview-join-button"))) ||
         (await clickFirstVisible(frame.locator('[data-testid*="join" i]'))) ||
