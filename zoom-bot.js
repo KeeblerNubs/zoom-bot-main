@@ -398,8 +398,8 @@ async function waitForChatInput(page) {
 
       const chatTarget = await waitForChatInput(page);
       if (!chatTarget) {
-        console.log("Chat box not found after retries.");
-        return;
+        console.log("Chat box not found after retries. Restarting cycle...");
+        throw new Error("RESTART_CYCLE");
       }
 
       const { locator: chatBox, selector } = chatTarget;
