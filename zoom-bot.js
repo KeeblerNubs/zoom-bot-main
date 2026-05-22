@@ -195,6 +195,22 @@ async function clickDisclaimerAgree(page) {
   return false;
 }
 
+
+async function detectRestartCondition(page) {
+  const frames = page.frames();
+  for (const frame of frames) {
+    try {
+      const bodyText = (await frame.innerText("body").catch(() => "")).toLowerCase();
+      const isRemoved = await frame.locator('.zm-modal-body-title:has-text("You have been removed")').count().catch(() => 0) > 0;
+      const inWaitingRoom = bodyText.includes("waiting room") || bodyText.includes("let you in soon");
+      if (isRemoved || inWaitingRoom) return true;
+    } catch {}
+  }
+
+  const ocrText = await detectTextViaOcr(page);
+  return ocrText.includes("waiting room") || ocrText.includes("let you in soon");
+}
+
 async function clickAnyJoinButton(page) {
   // Ensure we switch from the native-app prompt to web client when presented.
   await clickJoinFromBrowser(page);
@@ -204,11 +220,7 @@ async function clickAnyJoinButton(page) {
   const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
   for (const frame of frames) {
     try {
-      const bodyText = (await frame.innerText("body").catch(() => "")).toLowerCase();
-      const isRemoved = await frame.locator('.zm-modal-body-title:has-text("You have been removed")').count().catch(() => 0) > 0;
-      const inWaitingRoom = bodyText.includes("waiting room") || bodyText.includes("let you in soon");
-
-      if (isRemoved || inWaitingRoom) throw new Error("RESTART_CYCLE");
+      if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
@@ -221,9 +233,6 @@ async function clickAnyJoinButton(page) {
       if (e.message === "RESTART_CYCLE") throw e;
     }
   }
-
-  const ocrText = await detectTextViaOcr(page);
-  if (ocrText.includes("waiting room") || ocrText.includes("let you in soon")) throw new Error("RESTART_CYCLE");
 
   if (Date.now() - lastScrollLogTime > 2000) {
     console.log("No buttons found yet, scrolling down to discover elements...");
@@ -387,6 +396,7 @@ async function waitForChatInput(page) {
       console.log(`Chat input found using selector: ${selector}`);
 
       while (!shouldStop && !page.isClosed()) {
+        if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
         if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
         if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
         if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page);
