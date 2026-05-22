@@ -243,14 +243,19 @@ async function clickAnyJoinButton(page) {
 }
 
 async function clickChatButton(page) {
+  const selectors = [
+    (frame) => frame.getByRole("button", { name: /chat/i }),
+    (frame) => frame.locator('[aria-label*="chat" i]'),
+    (frame) => frame.locator('[data-testid*="chat" i]'),
+    (frame) => frame.locator('[id*="chat" i]'),
+    (frame) => frame.locator('button:has-text("Chat")')
+  ];
+
   const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
   for (const frame of frames) {
-    if (
-      (await clickFirstVisible(frame.getByRole("button", { name: /chat/i }))) ||
-      (await clickFirstVisible(frame.locator('[aria-label*="chat" i]'))) ||
-      (await clickFirstVisible(frame.locator('[data-testid*="chat" i]'))) ||
-      (await clickFirstVisible(frame.locator('button:has-text("Chat")')))
-    ) return true;
+    for (const getSelector of selectors) {
+      if (await clickFirstVisible(getSelector(frame))) return true;
+    }
   }
   return false;
 }
@@ -300,11 +305,17 @@ async function waitForChatInput(page) {
   const startedAt = Date.now();
   while (!shouldStop && Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
     if (page.isClosed()) return null;
+
+    // Fast-path: race to open chat first, then look for the input.
+    await clickChatButton(page);
+    await triggerChatShortcut(page);
+    const fastFound = await findChatInput(page);
+    if (fastFound) return fastFound;
+
     await clickAnyJoinButton(page);
     const found = await findChatInput(page);
     if (found) return found;
-    await clickChatButton(page);
-    await triggerChatShortcut(page);
+
     if (!(await safeWait(page, CONFIG.pollIntervalMs))) return null;
   }
   return null;
