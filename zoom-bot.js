@@ -444,7 +444,8 @@ async function waitForChatInput(page) {
         if (shell.context) await shell.context.close().catch(() => {});
         if (shell.userDataDir) await rm(shell.userDataDir, { recursive: true, force: true }).catch(() => {});
       }
-      if (shouldStop && CONFIG.gracefulShutdownMs > 0) {
+      const shouldDelayShutdown = shouldStop && CONFIG.gracefulShutdownMs > 0 && !/^SIG(?:INT|TERM)\b/.test(stopReason);
+      if (shouldDelayShutdown) {
         await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
       }
     }
