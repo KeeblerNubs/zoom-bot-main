@@ -38,6 +38,10 @@ function requestStop(reason = "stop requested") {
   console.log(`[failsafe] ${reason}`);
 }
 
+function isError1132(error) {
+  return /\b1132\b/.test(String(error?.message || error || ""));
+}
+
 function fallbackName() {
   const names = ["Mundy", "Jake", "slmpig", "Nathan", "Intelll"];
   return names[Math.floor(Math.random() * names.length)];
@@ -345,6 +349,9 @@ async function waitForChatInput(page) {
           break;
         } catch (error) {
           console.log(`Failed join URL ${joinUrl}: ${error.message}`);
+          if (isError1132(error)) {
+            throw new Error("RESTART_CYCLE");
+          }
         }
       }
       if (!joinLoaded) throw new Error("Could not load any Zoom web join URL");
@@ -408,7 +415,16 @@ async function waitForChatInput(page) {
           requestStop(`max restart cycles reached (${maxRestartCycles})`);
           break;
         }
-        console.log("Detected removal/waiting room. Restarting cycle...");
+        console.log("Detected restart condition (waiting room/removal/error 1132). Starting a brand-new Chrome instance...");
+        continue;
+      }
+      if (isError1132(error)) {
+        restartCount += 1;
+        if (maxRestartCycles > 0 && restartCount > maxRestartCycles) {
+          requestStop(`max restart cycles reached (${maxRestartCycles})`);
+          break;
+        }
+        console.log("Error 1132 detected. Starting a brand-new Chrome instance...");
         continue;
       }
       if (String(error).includes("Target page, context or browser has been closed")) break;
