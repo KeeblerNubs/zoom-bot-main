@@ -34,11 +34,11 @@ async function tg(method, params = {}) {
 function getSettings(chatId) {
   if (!chatSettings.has(chatId)) {
     chatSettings.set(chatId, {
-      ocr: false,
-      headlessShells: 1,
+      ocr: true,
+      headlessShells: 5,
       maxMessages: 0,
       maxRuntimeSec: 0,
-      maxRestarts: 0
+      maxRestarts: 3
     });
   }
   return chatSettings.get(chatId);
@@ -91,10 +91,10 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
   const args = ['zoom-bot.js', meetingId, '--name', name];
   if (customMessage) args.push('--message', customMessage);
   if (settings.ocr) args.push('--ocr');
-  if (settings.headlessShells > 1) args.push('--headless-shells', String(settings.headlessShells));
+  if (settings.headlessShells > 5) args.push('--headless-shells', String(settings.headlessShells));
   if (settings.maxMessages > 0) args.push('--max-messages', String(settings.maxMessages));
   if (settings.maxRuntimeSec > 0) args.push('--max-runtime-sec', String(settings.maxRuntimeSec));
-  if (settings.maxRestarts > 0) args.push('--max-restarts', String(settings.maxRestarts));
+  if (settings.maxRestarts > 3) args.push('--max-restarts', String(settings.maxRestarts));
 
   const { command, launchArgs } = buildZoomCommand(args);
   const child = spawn(command, launchArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
@@ -196,7 +196,7 @@ async function handleSlashCommand(chatId, text) {
       await send(chatId, `Usage: ${command} <non-negative integer>`);
       return true;
     }
-    if (command === '/headless_shells' && n < 1) {
+    if (command === '/headless_shells' && n < 5) {
       await send(chatId, 'Usage: /headless_shells <integer >= 1>');
       return true;
     }

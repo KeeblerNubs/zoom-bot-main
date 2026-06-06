@@ -31,11 +31,17 @@ let lastOcrCheck = 0;
 let shouldStop = false;
 let stopReason = "";
 
+const stopController = new AbortController();
+let stopResolve;
+const stopPromise = new Promise((resolve) => { stopResolve = resolve; });
+
 function requestStop(reason = "stop requested") {
   if (shouldStop) return;
   shouldStop = true;
   stopReason = reason;
   console.log(`[failsafe] ${reason}`);
+  try { stopController.abort(); } catch {}
+  try { stopResolve?.(); } catch {}
 }
 
 function isError1132(error) {
@@ -109,9 +115,13 @@ async function safeWait(page, ms) {
   if (shouldStop) return false;
   if (page.isClosed()) return false;
   if (ms <= 0) return true;
+
   try {
-    await page.waitForTimeout(ms);
-    return true;
+    await Promise.race([
+      page.waitForTimeout(ms),
+      stopPromise
+    ]);
+    return !shouldStop && !page.isClosed();
   } catch (error) {
     if (page.isClosed()) return false;
     throw error;
@@ -301,6 +311,17 @@ async function createFreshShell() {
   return { context, page, userDataDir };
 }
 
+async function closeAllShells(activeShells) {
+  await Promise.all(activeShells.map(async (shell) => {
+    try {
+      if (shell?.context && !shell.context.isClosed()) await shell.context.close({ runBeforeUnload: false }).catch(() => {});
+    } catch {}
+    try {
+      if (shell?.userDataDir) await rm(shell.userDataDir, { recursive: true, force: true }).catch(() => {});
+    } catch {}
+  }));
+}
+
 async function waitForChatInput(page) {
   const startedAt = Date.now();
   while (!shouldStop && Date.now() - startedAt < CONFIG.chatDiscoveryTimeoutMs) {
@@ -329,6 +350,7 @@ async function waitForChatInput(page) {
   const maxMessagesArg = getNumericArgValue("--max-messages");
   const maxRuntimeArgSeconds = getNumericArgValue("--max-runtime-sec");
   const maxRestartsArg = getNumericArgValue("--max-restarts");
+
   let sentMessages = 0;
   let restartCount = 0;
   const startedAt = Date.now();
@@ -339,6 +361,96 @@ async function waitForChatInput(page) {
 
   process.on("SIGINT", () => requestStop("SIGINT received"));
   process.on("SIGTERM", () => requestStop("SIGTERM received"));
+
+  const joinUrls = [
+    `https://app.zoom.us/wc/${meetingId}/join`,
+    `https://app.zoom.us/wc/join/${meetingId}`,
+    `https://zoom.us/wc/${meetingId}/join`
+  ];
+
+  async function loadJoinPage(page) {
+    let joinLoaded = false;
+    for (const joinUrl of joinUrls) {
+      try {
+        await page.goto(joinUrl, { waitUntil: "domcontentloaded", signal: stopController.signal });
+        joinLoaded = true;
+        console.log(`[shell] Loaded join page: ${joinUrl}`);
+        break;
+      } catch (error) {
+        if (shouldStop) return false;
+        console.log(`[shell] Failed join URL ${joinUrl}: ${error.message}`);
+        if (isError1132(error)) throw new Error("RESTART_CYCLE");
+      }
+    }
+    return joinLoaded;
+  }
+
+  async function workerLoop(shellIndex, page) {
+    // Join + find chat
+    for (let attempt = 0; attempt < 50 && !shouldStop; attempt++) {
+      if (await clickAnyJoinButton(page)) break;
+      if (!(await safeWait(page, CONFIG.pollIntervalMs))) return;
+    }
+
+    for (let i = 0; i < 30 && !shouldStop; i++) {
+      if (shouldStop) return;
+      await checkAndHandleCaptcha(page);
+      const nameInput = page.locator("#input-for-name");
+      if ((await nameInput.count()) > 0) {
+        await nameInput.fill(displayName).catch(() => {});
+        break;
+      }
+      await safeWait(page, CONFIG.pollIntervalMs);
+    }
+
+    for (let i = 0; i < 50 && !shouldStop; i++) {
+      if (await clickAnyJoinButton(page)) break;
+      await safeWait(page, CONFIG.pollIntervalMs);
+    }
+
+    const chatTarget = await waitForChatInput(page);
+    if (!chatTarget) throw new Error("RESTART_CYCLE");
+
+    const { locator: chatBox, selector } = chatTarget;
+    await chatBox.click().catch(() => {});
+    console.log(`[shell-${shellIndex}] Chat input found using selector: ${selector}`);
+
+    while (!shouldStop && !page.isClosed()) {
+      if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
+      if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
+      if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
+
+      if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page).catch(() => {});
+
+      if (maxMessages > 0 && sentMessages >= maxMessages) {
+        requestStop(`max messages reached (${maxMessages})`);
+        return;
+      }
+
+      // Send one message (guarded by global counter; JS is single-threaded so this is safe enough)
+      if (maxMessages > 0 && sentMessages >= maxMessages) return;
+
+      if (message) {
+        await chatBox.fill(message).catch(() => {});
+      } else {
+        await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
+          await page.keyboard.press("ControlOrMeta+V").catch(() => {});
+        });
+      }
+
+      await chatBox.press("Enter", { delay: 0 }).catch(async () => {
+        await page.keyboard.press("Enter").catch(() => {});
+      });
+
+      sentMessages += 1;
+      if (maxMessages > 0 && sentMessages >= maxMessages) {
+        requestStop(`max messages reached (${maxMessages})`);
+        return;
+      }
+
+      if (!(await safeWait(page, CONFIG.repeatSpeedMs))) return;
+    }
+  }
 
   while (!shouldStop) {
     const activeShells = [];
@@ -352,85 +464,22 @@ async function waitForChatInput(page) {
         activeShells.push(shell);
       }
 
-      const { page } = activeShells[0];
       console.log(`Opening Zoom with ${headlessShells} headless shell(s)...`);
 
-      const joinUrls = [
-        `https://app.zoom.us/wc/${meetingId}/join`,
-        `https://app.zoom.us/wc/join/${meetingId}`,
-        `https://zoom.us/wc/${meetingId}/join`
-      ];
-      let joinLoaded = false;
-      for (const joinUrl of joinUrls) {
-        try {
-          await page.goto(joinUrl, { waitUntil: "domcontentloaded" });
-          joinLoaded = true;
-          console.log(`Loaded join page: ${joinUrl}`);
-          break;
-        } catch (error) {
-          console.log(`Failed join URL ${joinUrl}: ${error.message}`);
-          if (isError1132(error)) {
-            throw new Error("RESTART_CYCLE");
-          }
-        }
-      }
-      if (!joinLoaded) throw new Error("Could not load any Zoom web join URL");
+      // Load join page in each shell
+      await Promise.all(activeShells.map(async (shell, idx) => {
+        if (shouldStop) return;
+        const ok = await loadJoinPage(shell.page);
+        if (!ok) throw new Error("RESTART_CYCLE");
+        console.log(`[shell-${idx}] join page loaded`);
+      }));
 
-      for (let i = 0; i < 50; i++) {
-        if (await clickAnyJoinButton(page)) break;
-        if (!(await safeWait(page, CONFIG.pollIntervalMs))) return;
-      }
+      // Run parallel workers (each shell participates)
+      await Promise.all(activeShells.map((shell, idx) => workerLoop(idx + 1, shell.page)));
 
-      for (let i = 0; i < 30; i++) {
-        await checkAndHandleCaptcha(page);
-        const nameInput = page.locator("#input-for-name");
-        if (await nameInput.count()) {
-          await nameInput.fill(displayName);
-          break;
-        }
-        await safeWait(page, CONFIG.pollIntervalMs);
-      }
-
-      for (let i = 0; i < 50; i++) {
-        if (await clickAnyJoinButton(page)) break;
-        await safeWait(page, CONFIG.pollIntervalMs);
-      }
-
-      const chatTarget = await waitForChatInput(page);
-      if (!chatTarget) {
-        console.log("Chat box not found after retries. Restarting cycle...");
-        throw new Error("RESTART_CYCLE");
-      }
-
-      const { locator: chatBox, selector } = chatTarget;
-      await chatBox.click().catch(() => {});
-      console.log(`Chat input found using selector: ${selector}`);
-
-      while (!shouldStop && !page.isClosed()) {
-        if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
-        if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
-        if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
-        if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page);
-        if (message) {
-          await chatBox.fill(message).catch(() => {});
-        } else {
-          await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
-            await page.keyboard.press("ControlOrMeta+V").catch(() => {});
-          });
-        }
-        await chatBox.press("Enter", { delay: 0 }).catch(async () => {
-          await page.keyboard.press("Enter").catch(() => {});
-        });
-        sentMessages += 1;
-        if (maxMessages > 0 && sentMessages >= maxMessages) {
-          requestStop(`max messages reached (${maxMessages})`);
-          break;
-        }
-        if (!(await safeWait(page, CONFIG.repeatSpeedMs))) break;
-      }
       break;
     } catch (error) {
-      if (error.message === "RESTART_CYCLE") {
+      if (error?.message === "RESTART_CYCLE") {
         restartCount += 1;
         if (maxRestartCycles > 0 && restartCount > maxRestartCycles) {
           requestStop(`max restart cycles reached (${maxRestartCycles})`);
@@ -451,17 +500,13 @@ async function waitForChatInput(page) {
       if (String(error).includes("Target page, context or browser has been closed")) break;
       throw error;
     } finally {
-      for (const shell of activeShells) {
-        if (shell.context) await shell.context.close().catch(() => {});
-        if (shell.userDataDir) await rm(shell.userDataDir, { recursive: true, force: true }).catch(() => {});
-      }
+      // If stop requested, begin immediate shutdown; otherwise normal cleanup
+      await closeAllShells(activeShells);
       const shouldDelayShutdown = shouldStop && CONFIG.gracefulShutdownMs > 0 && !/^SIG(?:INT|TERM)\b/.test(stopReason);
-      if (shouldDelayShutdown) {
-        await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
-      }
+      if (shouldDelayShutdown) await new Promise((resolve) => setTimeout(resolve, CONFIG.gracefulShutdownMs));
     }
   }
-  if (shouldStop) {
-    console.log(`Stopped safely: ${stopReason || "stop requested"}`);
-  }
+
+  if (shouldStop) console.log(`Stopped safely: ${stopReason || "stop requested"}`);
 })();
+

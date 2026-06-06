@@ -1,0 +1,5 @@
+- [ ] Implement immediate stop: AbortController + close all Playwright contexts/pages on SIGINT/SIGTERM
+- [ ] Refactor headless shell handling: run parallel worker per `--headless-shells` page
+- [ ] Enforce shared global limits across workers (`--max-messages`, runtime, stop-at)
+- [ ] Make waits/goto stop-aware (race with stop)
+- [ ] Syntax-check with `npm test` (node --check)
