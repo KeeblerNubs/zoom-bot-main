@@ -128,12 +128,18 @@ async function safeWait(page, ms) {
   }
 }
 
-async function clickFirstVisible(locator) {
+async function clickFirstVisible(locator, options = {}) {
+  const rejectText = options.rejectText;
   try {
     const count = await locator.count();
     for (let i = 0; i < count; i += 1) {
       const item = locator.nth(i);
       if (!(await item.isVisible().catch(() => false))) continue;
+      if (rejectText) {
+        const text = await item.innerText({ timeout: 25 }).catch(() => "");
+        const label = await item.getAttribute("aria-label", { timeout: 25 }).catch(() => "");
+        if (rejectText.test(`${text} ${label}`)) continue;
+      }
       await item.click({ timeout: 25, force: true });
       return true;
     }
@@ -206,8 +212,27 @@ async function checkAndHandleCaptcha(page) {
 }
 
 
+async function dismissNativeAppPrompts(page) {
+  for (const frame of page.frames()) {
+    await clickFirstVisible(frame.getByRole("button", { name: /cancel|not now|stay on browser|continue in browser/i })).catch(() => false);
+  }
+}
+
+async function ensureZoomWebClient(page) {
+  const currentUrl = page.url();
+  const meetingId = extractMeetingId(currentUrl);
+  if (!meetingId || /\/wc\//i.test(currentUrl)) return false;
+
+  const webClientUrl = `https://app.zoom.us/wc/${meetingId}/join`;
+  console.log(`[shell] Redirecting Zoom native-app link to web client: ${webClientUrl}`);
+  await page.goto(webClientUrl, { waitUntil: "domcontentloaded", signal: stopController.signal });
+  return true;
+}
+
 async function clickJoinFromBrowser(page) {
-  const frames = candidateFrames(page);
+  await ensureZoomWebClient(page).catch(() => false);
+  await dismissNativeAppPrompts(page).catch(() => false);
+  const frames = page.frames();
   for (const frame of frames) {
     if (
       (await clickFirstVisible(frame.getByRole("link", { name: /join from (your )?browser|join using browser|use browser|browser/i }))) ||
@@ -250,7 +275,7 @@ async function detectRestartCondition(page) {
 }
 
 async function clickAnyJoinButton(page) {
-  // Ensure we switch from the native-app prompt to web client when presented.
+  // Always prefer the Zoom web client and never intentionally launch the native app.
   await clickJoinFromBrowser(page);
   await checkAndHandleCaptcha(page);
   await clickDisclaimerAgree(page);
@@ -262,11 +287,11 @@ async function clickAnyJoinButton(page) {
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
-        (await clickFirstVisible(frame.getByRole("button", { name: /join|launch meeting|continue|audio|video|without|allow|got it|ok/i }))) ||
-        (await clickFirstVisible(zoomTextLocator(frame, /join|launch meeting|continue|audio|video|without|allow|got it|ok/i))) ||
-        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn"))) ||
-        (await clickFirstVisible(frame.locator('[data-testid*="join" i], [id*="join" i], [class*="join" i]'))) ||
-        (await clickFirstVisible(frame.locator('button:has-text("Join")')))
+        (await clickFirstVisible(frame.getByRole("button", { name: /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok)).*/i }))) ||
+        (await clickFirstVisible(zoomTextLocator(frame, /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok)).*/i))) ||
+        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn"), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
+        (await clickFirstVisible(frame.locator('[data-testid*="join" i], [id*="join" i], [class*="join" i]'), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
+        (await clickFirstVisible(frame.locator('button:has-text("Join")'), { rejectText: /launch meeting|open zoom|zoom meetings/i }))
       ) return true;
     } catch (e) {
       if (e.message === "RESTART_CYCLE") throw e;
@@ -340,9 +365,21 @@ async function createFreshShell() {
   const userDataDir = await mkdtemp(path.join(os.tmpdir(), "zoom-shell-profile-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
-    args: ["--disable-blink-features=AutomationControlled"]
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox"
+    ]
   });
+
+  context.on("page", (newPage) => {
+    newPage.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
+    newPage.on("framenavigated", (frame) => {
+      if (frame === newPage.mainFrame()) ensureZoomWebClient(newPage).catch(() => {});
+    });
+  });
+
   const page = context.pages()[0] || await context.newPage();
+  page.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
   return { context, page, userDataDir };
 }
 
@@ -410,6 +447,7 @@ async function waitForChatInput(page) {
     for (const joinUrl of joinUrls) {
       try {
         await page.goto(joinUrl, { waitUntil: "domcontentloaded", signal: stopController.signal });
+        await ensureZoomWebClient(page).catch(() => false);
         joinLoaded = true;
         console.log(`[shell] Loaded join page: ${joinUrl}`);
         break;
