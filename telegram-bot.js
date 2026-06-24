@@ -35,7 +35,7 @@ function getSettings(chatId) {
   if (!chatSettings.has(chatId)) {
     chatSettings.set(chatId, {
       ocr: true,
-      headlessShells: 5,
+      headlessShells: 1,
       maxMessages: 0,
       maxRuntimeSec: 0,
       maxRestarts: 3
@@ -90,8 +90,8 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
   const settings = getSettings(chatId);
   const args = ['zoom-bot.js', meetingId, '--name', name];
   if (customMessage) args.push('--message', customMessage);
-  if (settings.ocr) args.push('--ocr');
-  if (settings.headlessShells > 5) args.push('--headless-shells', String(settings.headlessShells));
+  args.push('--ocr');
+  args.push('--headless-shells', String(settings.headlessShells));
   if (settings.maxMessages > 0) args.push('--max-messages', String(settings.maxMessages));
   if (settings.maxRuntimeSec > 0) args.push('--max-runtime-sec', String(settings.maxRuntimeSec));
   if (settings.maxRestarts > 3) args.push('--max-restarts', String(settings.maxRestarts));
@@ -156,7 +156,7 @@ async function handleSlashCommand(chatId, text) {
         '',
         'Special slash commands:',
         '/settings - view current controls',
-        '/ocr on|off - toggle OCR mode',
+        '/ocr on|off - OCR is always used; off is accepted only for compatibility',
         '/headless_shells <N> - set parallel headless shells (min 1)',
         '/max_messages <N> - stop after N messages (0 disables)',
         '/max_runtime <seconds> - stop after N seconds (0 disables)',
@@ -178,8 +178,8 @@ async function handleSlashCommand(chatId, text) {
       await send(chatId, 'Usage: /ocr on|off');
       return true;
     }
-    settings.ocr = arg.toLowerCase() === 'on';
-    await send(chatId, `OCR is now ${settings.ocr ? 'ON' : 'OFF'}.`);
+    settings.ocr = true;
+    await send(chatId, 'OCR is always ON and will be used for every Zoom bot launch.');
     return true;
   }
 
@@ -196,7 +196,7 @@ async function handleSlashCommand(chatId, text) {
       await send(chatId, `Usage: ${command} <non-negative integer>`);
       return true;
     }
-    if (command === '/headless_shells' && n < 5) {
+    if (command === '/headless_shells' && n < 1) {
       await send(chatId, 'Usage: /headless_shells <integer >= 1>');
       return true;
     }

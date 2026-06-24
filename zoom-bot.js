@@ -18,7 +18,7 @@ const CONFIG = {
   chatDiscoveryTimeoutMs: Number(process.env.CHAT_DISCOVERY_TIMEOUT_MS || 120000),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30),
   maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 2),
-  useOcr: process.argv.includes("--ocr"),
+  useOcr: !process.argv.includes("--no-ocr"),
   maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
   maxMessages: Number(process.env.MAX_MESSAGES || 0),
   maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),

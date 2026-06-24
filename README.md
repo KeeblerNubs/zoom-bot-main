@@ -3,7 +3,7 @@
 ## What changed for speed/efficiency
 - Faster loop defaults with small non-zero polling (`POLL_INTERVAL_MS=30`) to avoid CPU thrash.
 - Reduced repeated frame-scanning overhead via configurable frame cap (`MAX_FRAME_SCAN`, default 2).
-- Optional OCR mode (`--ocr`) using local `tesseract` binary for fallback state detection (e.g., waiting room text when DOM selectors fail).
+- OCR is enabled by default using the local `tesseract` binary for fallback state detection (e.g., waiting room text when DOM selectors fail).
 - Better message input path: `--message "..."` uses direct textbox fill + Enter (faster/reliable than paste-only).
 
 ---
@@ -12,7 +12,7 @@
 - Node.js 18+
 - npm
 - Chromium dependencies for Playwright
-- Optional OCR:
+- OCR support:
   - `tesseract` CLI installed and available in PATH
 
 ### Install tesseract
@@ -41,7 +41,7 @@
    ```bash
    npx playwright install chromium
    ```
-3. (Optional) Confirm OCR support:
+3. Confirm OCR support:
    ```bash
    tesseract --version
    ```
@@ -53,9 +53,9 @@
    ```bash
    node zoom-bot.js 123456789 --message "hello world"
    ```
-6. Run with OCR fallback enabled:
+6. Run with multiple parallel headless browser shells:
    ```bash
-   node zoom-bot.js 123456789 --message "hello" --ocr
+   node zoom-bot.js 123456789 --message "hello" --headless-shells 3
    ```
 
 ---
@@ -102,7 +102,7 @@ Signals:
 ---
 
 ## Notes
-- OCR is fallback-only; normal DOM selector flow is still primary and faster.
+- OCR is enabled by default for fallback state detection; normal DOM selector flow is still primary and faster.
 - If `--message` is not provided, bot falls back to clipboard paste (`Ctrl/Cmd+V`) then Enter.
 
 ---
@@ -145,7 +145,7 @@ Install Playwright Chromium + Linux deps:
 npx playwright install --with-deps chromium
 ```
 
-Optional OCR support:
+OCR support:
 ```bash
 sudo apt-get install -y tesseract-ocr
 ```
@@ -229,7 +229,7 @@ The bot will respond when a run starts and when it finishes.
 The Telegram bot supports slash commands to configure runtime behavior per chat:
 
 - `/settings` — view current settings
-- `/ocr on|off` — toggle OCR fallback mode
+- `/ocr on|off` — OCR is always used for Zoom launches; `off` is accepted only for compatibility
 - `/headless_shells <N>` — choose how many headless browser shells run in parallel (minimum `1`)
 - `/max_messages <N>` — stop after N sent messages (`0` disables)
 - `/max_runtime <seconds>` — stop after N seconds (`0` disables)
