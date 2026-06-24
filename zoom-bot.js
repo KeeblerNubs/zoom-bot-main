@@ -130,13 +130,41 @@ async function safeWait(page, ms) {
 
 async function clickFirstVisible(locator) {
   try {
-    if ((await locator.count()) === 0) return false;
-    const first = locator.first();
-    await first.click({ timeout: 25, force: true });
-    return true;
-  } catch {
-    return false;
-  }
+    const count = await locator.count();
+    for (let i = 0; i < count; i += 1) {
+      const item = locator.nth(i);
+      if (!(await item.isVisible().catch(() => false))) continue;
+      await item.click({ timeout: 25, force: true });
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function candidateFrames(page) {
+  return page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+}
+
+function zoomTextLocator(frame, textPattern, elementSelector = "button, a") {
+  return frame.locator(elementSelector).filter({ hasText: textPattern });
+}
+
+async function fillFirstVisible(locator, value) {
+  try {
+    const count = await locator.count();
+    for (let i = 0; i < count; i += 1) {
+      const item = locator.nth(i);
+      if (await item.isVisible().catch(() => false)) {
+        await item.fill(value, { timeout: 250 }).catch(async () => {
+          await item.click({ timeout: 250, force: true });
+          await item.press("ControlOrMeta+A", { delay: 0 }).catch(() => {});
+          await item.type(value, { delay: 0 });
+        });
+        return true;
+      }
+    }
+  } catch {}
+  return false;
 }
 
 async function detectTextViaOcr(page) {
@@ -157,7 +185,7 @@ async function detectTextViaOcr(page) {
 }
 
 async function checkAndHandleCaptcha(page) {
-  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = candidateFrames(page);
   for (const frame of frames) {
     try {
       const recaptcha = frame.locator('#recaptcha-anchor');
@@ -179,13 +207,13 @@ async function checkAndHandleCaptcha(page) {
 
 
 async function clickJoinFromBrowser(page) {
-  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = candidateFrames(page);
   for (const frame of frames) {
     if (
-      (await clickFirstVisible(frame.getByRole("link", { name: /join from (your )?browser/i }))) ||
-      (await clickFirstVisible(frame.getByRole("button", { name: /join from (your )?browser/i }))) ||
-      (await clickFirstVisible(frame.locator('a:has-text("Join from Your Browser")'))) ||
-      (await clickFirstVisible(frame.locator('[data-testid*="join-browser" i]')))
+      (await clickFirstVisible(frame.getByRole("link", { name: /join from (your )?browser|join using browser|use browser|browser/i }))) ||
+      (await clickFirstVisible(frame.getByRole("button", { name: /join from (your )?browser|join using browser|use browser|browser/i }))) ||
+      (await clickFirstVisible(zoomTextLocator(frame, /join from (your )?browser|join using browser|use browser|browser/i, "a, button, span, div"))) ||
+      (await clickFirstVisible(frame.locator('[data-testid*="join-browser" i], [data-testid*="browser-join" i], [id*="join-browser" i], [class*="join-browser" i]')))
     ) {
       console.log("Opened Zoom web client (Join from browser).");
       return true;
@@ -227,16 +255,17 @@ async function clickAnyJoinButton(page) {
   await checkAndHandleCaptcha(page);
   await clickDisclaimerAgree(page);
 
-  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = candidateFrames(page);
   for (const frame of frames) {
     try {
       if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
-        (await clickFirstVisible(frame.getByRole("button", { name: /join|launch meeting|continue|audio|video|without/i }))) ||
-        (await clickFirstVisible(frame.locator(".preview-join-button"))) ||
-        (await clickFirstVisible(frame.locator('[data-testid*="join" i]'))) ||
+        (await clickFirstVisible(frame.getByRole("button", { name: /join|launch meeting|continue|audio|video|without|allow|got it|ok/i }))) ||
+        (await clickFirstVisible(zoomTextLocator(frame, /join|launch meeting|continue|audio|video|without|allow|got it|ok/i))) ||
+        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn"))) ||
+        (await clickFirstVisible(frame.locator('[data-testid*="join" i], [id*="join" i], [class*="join" i]'))) ||
         (await clickFirstVisible(frame.locator('button:has-text("Join")')))
       ) return true;
     } catch (e) {
@@ -254,14 +283,15 @@ async function clickAnyJoinButton(page) {
 
 async function clickChatButton(page) {
   const selectors = [
-    (frame) => frame.getByRole("button", { name: /chat/i }),
+    (frame) => frame.getByRole("button", { name: /chat|meeting chat/i }),
     (frame) => frame.locator('[aria-label*="chat" i]'),
     (frame) => frame.locator('[data-testid*="chat" i]'),
     (frame) => frame.locator('[id*="chat" i]'),
-    (frame) => frame.locator('button:has-text("Chat")')
+    (frame) => frame.locator('[class*="chat" i] button, button[class*="chat" i]'),
+    (frame) => zoomTextLocator(frame, /chat|meeting chat/i)
   ];
 
-  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = candidateFrames(page);
   for (const frame of frames) {
     for (const getSelector of selectors) {
       if (await clickFirstVisible(getSelector(frame))) return true;
@@ -282,13 +312,18 @@ async function findChatInput(page) {
   const selectors = [
     '.tiptap.ProseMirror[contenteditable="true"]',
     '.tiptap.ProseMirror',
+    '.chat-box__chat-textarea[contenteditable="true"]',
     '[contenteditable="true"][role="textbox"]',
     '[contenteditable="true"][aria-label*="message" i]',
+    '[contenteditable="true"][aria-placeholder*="message" i]',
+    '[contenteditable="true"][data-placeholder*="message" i]',
+    '[contenteditable="true"][class*="chat" i]',
     'textarea[aria-label*="message" i]',
+    'textarea[placeholder*="message" i]',
     'textarea'
   ];
 
-  const frames = page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = candidateFrames(page);
   for (const frame of frames) {
     for (const selector of selectors) {
       const locator = frame.locator(selector).first();
@@ -363,8 +398,10 @@ async function waitForChatInput(page) {
   process.on("SIGTERM", () => requestStop("SIGTERM received"));
 
   const joinUrls = [
+    `https://app.zoom.us/wc/join?from=join&confno=${meetingId}`,
     `https://app.zoom.us/wc/${meetingId}/join`,
     `https://app.zoom.us/wc/join/${meetingId}`,
+    `https://zoom.us/wc/join?from=join&confno=${meetingId}`,
     `https://zoom.us/wc/${meetingId}/join`
   ];
 
@@ -395,11 +432,15 @@ async function waitForChatInput(page) {
     for (let i = 0; i < 30 && !shouldStop; i++) {
       if (shouldStop) return;
       await checkAndHandleCaptcha(page);
-      const nameInput = page.locator("#input-for-name");
-      if ((await nameInput.count()) > 0) {
-        await nameInput.fill(displayName).catch(() => {});
-        break;
-      }
+      const nameInput = page.locator([
+        "#input-for-name",
+        'input[name="displayName"]',
+        'input[name="screenName"]',
+        'input[aria-label*="name" i]',
+        'input[placeholder*="name" i]',
+        'input[type="text"]'
+      ].join(", "));
+      if (await fillFirstVisible(nameInput, displayName)) break;
       await safeWait(page, CONFIG.pollIntervalMs);
     }
 
