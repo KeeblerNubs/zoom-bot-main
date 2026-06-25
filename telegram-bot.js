@@ -14,6 +14,10 @@ if (!token) {
 
 const MAX_MESSAGE_CHARS = 1000;
 const MAX_LOG_CHARS = 12000;
+const BANNED_ZOOM_IDENTIFIERS = [
+  'TLRXXL',
+  'TLR: SMOKE & STROKE'
+];
 
 const activeRuns = new Map();
 const pendingMessages = new Map();
@@ -58,6 +62,18 @@ function extractMeetingId(text) {
   if (confParamMatch) return confParamMatch[1];
 
   return normalizeMeetingId(normalized);
+}
+
+function normalizeBanIdentifier(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+}
+
+function isBannedZoomTarget(text) {
+  const normalized = normalizeBanIdentifier(text);
+  return BANNED_ZOOM_IDENTIFIERS.some((identifier) => {
+    const banned = normalizeBanIdentifier(identifier);
+    return banned && normalized.includes(banned);
+  });
 }
 
 async function send(chatId, text) {
@@ -251,3 +267,52 @@ async function handleMessage(message) {
       pendingMessages.set(chatId, { ...pending, displayName });
       await send(chatId, 'What message do you want sent in Zoom chat?');
       return;
+    }
+
+    pendingMessages.delete(chatId);
+    const customMessage = text || defaultMessage;
+    const clamped = clampMessage(customMessage);
+    runZoomBot(chatId, pending.meetingId, clamped.message, pending.displayName);
+    await send(chatId, `Starting Zoom bot for meeting ${pending.meetingId} as ${pending.displayName}.`);
+    if (clamped.truncated) {
+      await send(chatId, `Message was truncated to ${MAX_MESSAGE_CHARS} characters (received ${clamped.originalLength}).`);
+    }
+    return;
+  }
+
+  const payload = text.replace(/^\/join(?:\?.*?)?\s*/i, '');
+  if (isBannedZoomTarget(payload)) {
+    await send(chatId, 'That Zoom target is banned and cannot be joined.');
+    return;
+  }
+
+  const meetingId = extractMeetingId(payload);
+  if (!meetingId) {
+    await send(chatId, 'Could not parse a valid Zoom meeting ID. Try /help for command usage.');
+    return;
+  }
+
+  pendingMessages.set(chatId, {
+    meetingId,
+    displayName: ''
+  });
+  await send(chatId, 'What name should I use in Zoom?');
+}
+
+async function poll() {
+  while (true) {
+    try {
+      const updates = await tg('getUpdates', { offset, timeout: 30, allowed_updates: ['message'] });
+      for (const update of updates) {
+        offset = update.update_id + 1;
+        if (update.message) await handleMessage(update.message);
+      }
+    } catch (error) {
+      console.error('Polling error:', error.message);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
+console.log('Telegram Zoom relay bot is running...');
+poll();
