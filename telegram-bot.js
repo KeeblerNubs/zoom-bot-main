@@ -1,292 +1,253 @@
-import os
-import re
-import sys
-import json
-import shutil
-import subprocess
-import time
-import requests
+#!/usr/bin/env node
+const { loadEnvFromFile } = require('./env-loader');
+loadEnvFromFile();
+const { spawn, spawnSync } = require('node:child_process');
 
-# Load environment variables if needed (mimicking your env-loader)
-token = os.environ.get("TELEGRAM_BOT_TOKEN")
-default_message = os.environ.get("ZOOM_CHAT_MESSAGE", "")
-api_base = f"https://api.telegram.org/bot{token}" if token else ""
+const token = process.env.TELEGRAM_BOT_TOKEN;
+const defaultMessage = process.env.ZOOM_CHAT_MESSAGE || '';
+const apiBase = token ? `https://api.telegram.org/bot${token}` : '';
 
-if not token:
-    print("Missing TELEGRAM_BOT_TOKEN environment variable. TLR SMOKE STROKE", file=sys.stderr)
-    sys.exit(1)
+if (!token) {
+  console.error('Missing TELEGRAM_BOT_TOKEN environment variable.');
+  process.exit(1);
+}
 
-MAX_MESSAGE_CHARS = 1000
-MAX_LOG_CHARS = 12000
+const MAX_MESSAGE_CHARS = 1000;
+const MAX_LOG_CHARS = 12000;
 
-active_runs = {}
-pending_messages = {}
-chat_settings = {}
-offset = 0
+const activeRuns = new Map();
+const pendingMessages = new Map();
+const chatSettings = new Map();
+let offset = 0;
 
-def tg(method, params=None):
-    if params is None:
-        params = {}
-    res = requests.post(f"{api_base}/{method}", json=params)
-    data = res.json()
-    if not data.get("ok"):
-        raise Exception(data.get("description", f"Telegram API error in {method}"))
-    return data.get("result")
+async function tg(method, params = {}) {
+  const res = await fetch(`${apiBase}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.description || `Telegram API error in ${method}`);
+  return data.result;
+}
 
-def get_settings(chat_id):
-    if chat_id not in chat_settings:
-        chat_settings[chat_id] = {
-            "ocr": True,
-            "headlessShells": 8,
-            "maxMessages": 0,
-            "maxRuntimeSec": 0,
-            "maxRestarts": 10
-        }
-    return chat_settings[chat_id]
+function getSettings(chatId) {
+  if (!chatSettings.has(chatId)) {
+    chatSettings.set(chatId, {
+      ocr: true,
+      headlessShells: 8,
+      maxMessages: 0,
+      maxRuntimeSec: 0,
+      maxRestarts: 10
+    });
+  }
+  return chatSettings.get(chatId);
+}
 
-def normalize_meeting_id(value):
-    digits = re.sub(r"\D", "", str(value or ""))
-    return digits if len(digits) >= 9 else ""
+function normalizeMeetingId(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length >= 9 ? digits : '';
+}
 
-def extract_meeting_id(text):
-    normalized = str(text or "").strip()
-    link_match = re.search(r"/(?:wc|j|w)/(\d{9,})", normalized, re.IGNORECASE)
-    if link_match:
-        return link_match.group(1)
+function extractMeetingId(text) {
+  const normalized = String(text || '').trim();
+  const linkMatch = normalized.match(/\/(?:wc|j|w)\/(\d{9,})/i);
+  if (linkMatch) return linkMatch[1];
 
-    conf_param_match = re.search(r"[?&]confno=(\d{9,})", normalized, re.IGNORECASE)
-    if conf_param_match:
-        return conf_param_match.group(1)
+  const confParamMatch = normalized.match(/[?&]confno=(\d{9,})/i);
+  if (confParamMatch) return confParamMatch[1];
 
-    return normalize_meeting_id(normalized)
+  return normalizeMeetingId(normalized);
+}
 
-def send(chat_id, text):
-    try:
-        tg("sendMessage", {"chat_id": chat_id, "text": text})
-    except Exception as e:
-        print(f"Send error: {e}", file=sys.stderr)
+async function send(chatId, text) {
+  return tg('sendMessage', { chat_id: chatId, text });
+}
 
-def clamp_message(text):
-    value = str(text or "")
-    if len(value) <= MAX_MESSAGE_CHARS:
-        return {"message": value, "truncated": False, "originalLength": len(value)}
-    return {
-        "message": value[:MAX_MESSAGE_CHARS],
-        "truncated": True,
-        "originalLength": len(value)
+function clampMessage(text) {
+  const value = String(text || '');
+  if (value.length <= MAX_MESSAGE_CHARS) {
+    return { message: value, truncated: false, originalLength: value.length };
+  }
+  return {
+    message: value.slice(0, MAX_MESSAGE_CHARS),
+    truncated: true,
+    originalLength: value.length
+  };
+}
+
+
+function buildZoomCommand(args) {
+  const xvfbAvailable = spawnSync('xvfb-run', ['--help'], { stdio: 'ignore' }).status !== null;
+  if (xvfbAvailable) {
+    return { command: 'xvfb-run', launchArgs: ['-a', 'node', ...args] };
+  }
+  return { command: 'node', launchArgs: args };
+}
+
+function runZoomBot(chatId, meetingId, customMessage, name) {
+  if (activeRuns.has(chatId)) return null;
+  const settings = getSettings(chatId);
+  const args = ['zoom-bot.js', meetingId, '--name', name];
+  if (customMessage) args.push('--message', customMessage);
+  args.push('--ocr');
+  args.push('--headless-shells', String(settings.headlessShells));
+  if (settings.maxMessages > 0) args.push('--max-messages', String(settings.maxMessages));
+  if (settings.maxRuntimeSec > 0) args.push('--max-runtime-sec', String(settings.maxRuntimeSec));
+  if (settings.maxRestarts > 3) args.push('--max-restarts', String(settings.maxRestarts));
+
+  const { command, launchArgs } = buildZoomCommand(args);
+  const child = spawn(command, launchArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+  activeRuns.set(chatId, child);
+
+  let detailedLogs = '';
+  const appendLogs = (source, buf) => {
+    const text = String(buf || '');
+    if (!text) return;
+    detailedLogs += `[${source}] ${text}`;
+    if (detailedLogs.length > MAX_LOG_CHARS) {
+      detailedLogs = detailedLogs.slice(-MAX_LOG_CHARS);
     }
+  };
 
-def build_zoom_command(args):
-    xvfb_available = shutil.which("xvfb-run") is not None
-    if xvfb_available:
-        return {"command": "xvfb-run", "launchArgs": ["-a", "node"] + args}
-    return {"command": "node", "launchArgs": args}
+  child.stdout.on('data', (buf) => appendLogs('stdout', buf));
+  child.stderr.on('data', (buf) => appendLogs('stderr', buf));
 
-def run_zoom_bot(chat_id, meeting_id, custom_message, name):
-    if chat_id in active_runs:
-        return None
-    
-    settings = get_settings(chat_id)
-    args = ["zoom-bot.js", meeting_id, "--name", name]
-    if custom_message:
-        args.extend(["--message", custom_message])
-    args.append("--ocr")
-    args.extend(["--headless-shells", str(settings["headlessShells"])])
-    if settings["maxMessages"] > 0:
-        args.extend(["--max-messages", str(settings["maxMessages"])])
-    if settings["maxRuntimeSec"] > 0:
-        args.extend(["--max-runtime-sec", str(settings["maxRuntimeSec"])])
-    if settings["maxRestarts"] > 3:
-        args.extend(["--max-restarts", str(settings["maxRestarts"])])
+  child.on('error', (error) => {
+    activeRuns.delete(chatId);
+    const { message } = clampMessage(`Failed to start Zoom bot for meeting ${meetingId}: ${error.message}`);
+    send(chatId, message).catch(() => {});
+  });
 
-    cmd_info = build_zoom_command(args)
-    
-    try:
-        # Non-blocking process launch
-        child = subprocess.Popen(
-            [cmd_info["command"]] + cmd_info["launchArgs"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
-        active_runs[chat_id] = child
-        
-        # Note: In a pure synchronous polling environment, full log background capture 
-        # requires threading. For simplification, this monitors execution status.
-        return child
-    except Exception as error:
-        if chat_id in active_runs:
-            del active_runs[chat_id]
-        clamped = clamp_message(f"Failed to start Zoom bot for meeting {meeting_id}: {str(error)}\n\nTLR SMOKE STROKE")
-        send(chat_id, clamped["message"])
-        return None
+  child.on('close', (code, signal) => {
+    activeRuns.delete(chatId);
+    const status = signal ? `signal ${signal}` : `exit code ${code}`;
+    const logSuffix = detailedLogs.trim() ? `\nLogs (latest ${MAX_LOG_CHARS} chars):\n${detailedLogs.trim()}` : '';
+    const { message } = clampMessage(`Zoom bot finished for meeting ${meetingId} (${status}).${logSuffix}`);
+    send(chatId, message).catch(() => {});
+  });
 
-def check_active_runs():
-    # Simple non-blocking check for finished processes during iteration
-    for chat_id, child in list(active_runs.items()):
-        poll_status = child.poll()
-        if poll_status is not None:
-            del active_runs[chat_id]
-            stdout, stderr = child.communicate()
-            logs = f"{stdout}\n{stderr}".strip()
-            detailed_logs = logs[-MAX_LOG_CHARS:] if len(logs) > MAX_LOG_CHARS else logs
-            log_suffix = f"\nLogs (latest {MAX_LOG_CHARS} chars):\n{detailed_logs}" if detailed_logs else ""
-            
-            clamped = clamp_message(f"Zoom bot finished (exit code {poll_status}).\nTLR SMOKE STROKE{log_suffix}")
-            send(chat_id, clamped["message"])
+  return child;
+}
 
-def settings_summary(chat_id):
-    s = get_settings(chat_id)
-    return "\n".join([
-        "Settings (TLR SMOKE STROKE):",
-        f"- OCR: {'ON' if s['ocr'] else 'OFF'}",
-        f"- headless-shells: {s['headlessShells']}",
-        f"- max-messages: {s['maxMessages'] or 'disabled'}",
-        f"- max-runtime-sec: {s['maxRuntimeSec'] or 'disabled'}",
-        f"- max-restarts: {s['maxRestarts'] or 'disabled'}"
-    ])
+function settingsSummary(chatId) {
+  const s = getSettings(chatId);
+  return [
+    'Settings:',
+    `- OCR: ${s.ocr ? 'ON' : 'OFF'}`,
+    `- headless-shells: ${s.headlessShells}`,
+    `- max-messages: ${s.maxMessages || 'disabled'}`,
+    `- max-runtime-sec: ${s.maxRuntimeSec || 'disabled'}`,
+    `- max-restarts: ${s.maxRestarts || 'disabled'}`
+  ].join('\n');
+}
 
-def handle_slash_command(chat_id, text):
-    lower = text.lower()
-    parts = text.split(None, 1)
-    command = parts[0]
-    arg = parts[1].strip() if len(parts) > 1 else ""
-    settings = get_settings(chat_id)
+async function handleSlashCommand(chatId, text) {
+  const lower = text.toLowerCase();
+  const [command, argRaw = ''] = text.split(/\s+/, 2);
+  const arg = argRaw.trim();
+  const settings = getSettings(chatId);
 
-    if re.match(r"^/(start|help)$", lower):
-        if chat_id in pending_messages:
-            del pending_messages[chat_id]
-        send(chat_id, "\n".join([
-            "TLR SMOKE STROKE - Help Menu",
-            "Send Zoom link or /join <meeting-id>. Then I will ask what message to send in Zoom chat.",
-            "",
-            "Special slash commands:",
-            "/settings - view current controls",
-            "/ocr on|off - OCR is always used; off is accepted only for compatibility",
-            "/headless_shells <N> - set parallel headless shells (min 1)",
-            "/max_messages <N> - stop after N messages (0 disables)",
-            "/max_runtime <seconds> - stop after N seconds (0 disables)",
-            "/max_restarts <N> - stop after N restarts (0 disables)",
-            "/status - show whether run is active",
-            "/stop - stop active run"
-        ]))
-        return True
+  if (/^\/(start|help)$/.test(lower)) {
+    pendingMessages.delete(chatId);
+    await send(chatId,
+      [
+        'Send Zoom link or /join <meeting-id>. Then I will ask what message to send in Zoom chat.',
+        '',
+        'Special slash commands:',
+        '/settings - view current controls',
+        '/ocr on|off - OCR is always used; off is accepted only for compatibility',
+        '/headless_shells <N> - set parallel headless shells (min 1)',
+        '/max_messages <N> - stop after N messages (0 disables)',
+        '/max_runtime <seconds> - stop after N seconds (0 disables)',
+        '/max_restarts <N> - stop after N restarts (0 disables)',
+        '/status - show whether run is active',
+        '/stop - stop active run'
+      ].join('\n')
+    );
+    return true;
+  }
 
-    if command == "/settings":
-        send(chat_id, settings_summary(chat_id))
-        return True
+  if (command === '/settings') {
+    await send(chatId, settingsSummary(chatId));
+    return true;
+  }
 
-    if command == "/ocr":
-        if not re.match(r"^(on|off)$", arg, re.IGNORECASE):
-            send(chat_id, "Usage: /ocr on|off\nTLR SMOKE STROKE")
-            return True
-        settings["ocr"] = True
-        send(chat_id, "OCR is always ON and will be used for every Zoom bot launch. TLR SMOKE STROKE")
-        return True
-
-    numeric_commands = {
-        "/headless_shells": "headlessShells",
-        "/max_messages": "maxMessages",
-        "/max_runtime": "maxRuntimeSec",
-        "/max_restarts": "maxRestarts"
+  if (command === '/ocr') {
+    if (!/^(on|off)$/i.test(arg)) {
+      await send(chatId, 'Usage: /ocr on|off');
+      return true;
     }
+    settings.ocr = true;
+    await send(chatId, 'OCR is always ON and will be used for every Zoom bot launch.');
+    return true;
+  }
 
-    if command in numeric_commands:
-        try:
-            n = int(arg)
-            if n < 0:
-                raise ValueError
-        except ValueError:
-            send(chat_id, f"Usage: {command} <non-negative integer>\nTLR SMOKE STROKE")
-            return True
-        
-        if command == "/headless_shells" and n < 1:
-            send(chat_id, "Usage: /headless_shells <integer >= 1>\nTLR SMOKE STROKE")
-            return True
-            
-        settings[numeric_commands[command]] = n
-        send(chat_id, f"Updated {command} to {n}.\nTLR SMOKE STROKE")
-        return True
+  const numericCommands = {
+    '/headless_shells': 'headlessShells',
+    '/max_messages': 'maxMessages',
+    '/max_runtime': 'maxRuntimeSec',
+    '/max_restarts': 'maxRestarts'
+  };
 
-    if command == "/status":
-        status_str = "active" if chat_id in active_runs else "idle"
-        send(chat_id, f"Run status: {status_str}\n{settings_summary(chat_id)}")
-        return True
-
-    if command == "/stop":
-        child = active_runs.get(chat_id)
-        if not child:
-            send(chat_id, "No active run to stop.\nTLR SMOKE STROKE")
-            return True
-        child.terminate()
-        send(chat_id, "Stop signal sent to active run.\nTLR SMOKE STROKE")
-        return True
-
-    return False
-
-def handle_message(message):
-    chat_id = message["chat"]["id"]
-    text = str(message.get("text", "")).strip()
-
-    if not text:
-        return
-        
-    if text.startswith("/"):
-        if handle_slash_command(chat_id, text):
-            return
-
-        if re.match(r"^/join(?:\?.*)?\s*$", text, re.IGNORECASE):
-            send(chat_id, "Usage: /join <meeting-id-or-zoom-link>\nExample: /join 1234567890\nTLR SMOKE STROKE")
-            return
-
-    if chat_id in active_runs:
-        send(chat_id, "A Zoom bot run is already active for this chat. Use /status or /stop.\nTLR SMOKE STROKE")
-        return
-
-    pending = pending_messages.get(chat_id)
-    if pending:
-        if not pending.get("displayName"):
-            display_name = text if text else "ZoomGuest"
-            pending["displayName"] = display_name
-            send(chat_id, "What message do you want sent in Zoom chat?\nTLR SMOKE STROKE")
-            return
-
-        del pending_messages[chat_id]
-        custom_message = text if text else default_message
-        clamped = clamp_message(custom_message)
-        run_zoom_bot(chat_id, pending["meetingId"], clamped["message"], pending["displayName"])
-        send(chat_id, f"Starting Zoom bot for meeting {pending['meetingId']} as {pending['displayName']}.\nTLR SMOKE STROKE")
-        if clamped["truncated"]:
-            send(chat_id, f"Message was truncated to {MAX_MESSAGE_CHARS} characters (received {clamped['originalLength']}).\nTLR SMOKE STROKE")
-        return
-
-    payload = re.sub(r"^/join(?:\?.*?)?\s*", "", text, flags=re.IGNORECASE)
-    meeting_id = extract_meeting_id(payload)
-    if not meeting_id:
-        send(chat_id, "Could not parse a valid Zoom meeting ID. Try /help for command usage.\nTLR SMOKE STROKE")
-        return
-
-    pending_messages[chat_id] = {
-        "meetingId": meeting_id,
-        "displayName": ""
+  if (numericCommands[command]) {
+    const n = Number(arg);
+    if (!Number.isInteger(n) || n < 0) {
+      await send(chatId, `Usage: ${command} <non-negative integer>`);
+      return true;
     }
-    send(chat_id, "What name should I use in Zoom?\nTLR SMOKE STROKE")
+    if (command === '/headless_shells' && n < 1) {
+      await send(chatId, 'Usage: /headless_shells <integer >= 1>');
+      return true;
+    }
+    settings[numericCommands[command]] = n;
+    await send(chatId, `Updated ${command} to ${n}.`);
+    return true;
+  }
 
-def poll():
-    global offset
-    print("Telegram Zoom relay bot is running... TLR SMOKE STROKE")
-    while True:
-        check_active_runs()
-        try:
-            updates = tg("getUpdates", {"offset": offset, "timeout": 30, "allowed_updates": ["message"]})
-            for update in updates:
-                offset = update["update_id"] + 1
-                if "message" in update:
-                    handle_message(update["message"])
-        except Exception as error:
-            print(f"Polling error (TLR SMOKE STROKE): {error}", file=sys.stderr)
-            time.sleep(2)
+  if (command === '/status') {
+    await send(chatId, activeRuns.has(chatId) ? `Run status: active\n${settingsSummary(chatId)}` : `Run status: idle\n${settingsSummary(chatId)}`);
+    return true;
+  }
 
-if __name__ == "__main__":
-    poll()
+  if (command === '/stop') {
+    const child = activeRuns.get(chatId);
+    if (!child) {
+      await send(chatId, 'No active run to stop.');
+      return true;
+    }
+    child.kill('SIGTERM');
+    await send(chatId, 'Stop signal sent to active run.');
+    return true;
+  }
+
+  return false;
+}
+
+async function handleMessage(message) {
+  const chatId = message.chat.id;
+  const text = String(message.text || '').trim();
+
+  if (!text) return;
+  if (text.startsWith('/')) {
+    const handled = await handleSlashCommand(chatId, text);
+    if (handled) return;
+
+    if (/^\/join(?:\?.*)?\s*$/i.test(text)) {
+      await send(chatId, 'Usage: /join <meeting-id-or-zoom-link>\nExample: /join 1234567890');
+      return;
+    }
+  }
+
+  if (activeRuns.has(chatId)) {
+    await send(chatId, 'A Zoom bot run is already active for this chat. Use /status or /stop.');
+    return;
+  }
+
+  const pending = pendingMessages.get(chatId);
+  if (pending) {
+    if (!pending.displayName) {
+      const displayName = text || 'ZoomGuest';
+      pendingMessages.set(chatId, { ...pending, displayName });
+      await send(chatId, 'What message do you want sent in Zoom chat?');
+      return;
