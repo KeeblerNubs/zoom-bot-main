@@ -35,10 +35,10 @@ function getSettings(chatId) {
   if (!chatSettings.has(chatId)) {
     chatSettings.set(chatId, {
       ocr: true,
-      headlessShells: 1,
+      headlessShells: 8,
       maxMessages: 0,
       maxRuntimeSec: 0,
-      maxRestarts: 3
+      maxRestarts: 10
     });
   }
   return chatSettings.get(chatId);
