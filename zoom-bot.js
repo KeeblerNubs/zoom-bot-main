@@ -17,7 +17,7 @@ const CONFIG = {
   repeatSpeedMs: Number(process.env.REPEAT_SPEED_MS || 20),
   chatDiscoveryTimeoutMs: Number(process.env.CHAT_DISCOVERY_TIMEOUT_MS || 120000),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30),
-  maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 2),
+  maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 8),
   useOcr: !process.argv.includes("--no-ocr"),
   maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
   maxMessages: Number(process.env.MAX_MESSAGES || 0),
@@ -148,7 +148,14 @@ async function clickFirstVisible(locator, options = {}) {
 }
 
 function candidateFrames(page) {
-  return page.frames().slice(0, CONFIG.maxFrameScanPerCycle);
+  const frames = page.frames();
+  const mainFrame = page.mainFrame();
+  const prioritized = [
+    mainFrame,
+    ...frames.filter((frame) => /zoom\.us|zoomgov\.com/i.test(frame.url())),
+    ...frames
+  ];
+  return [...new Set(prioritized)].slice(0, CONFIG.maxFrameScanPerCycle);
 }
 
 function zoomTextLocator(frame, textPattern, elementSelector = "button, a") {
@@ -171,6 +178,41 @@ async function fillFirstVisible(locator, value) {
     }
   } catch {}
   return false;
+}
+
+async function fillFirstVisibleInFrames(page, selectors, value) {
+  for (const frame of candidateFrames(page)) {
+    const locator = frame.locator(selectors.join(", "));
+    if (await fillFirstVisible(locator, value)) return true;
+  }
+  return false;
+}
+
+async function setEditableText(locator, page, value) {
+  await locator.click({ timeout: 250, force: true }).catch(() => {});
+  const filled = await locator.fill(value, { timeout: 250 }).then(() => true).catch(() => false);
+  if (filled) return true;
+
+  const evaluated = await locator.evaluate((node, text) => {
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+      node.value = text;
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    if (node instanceof HTMLElement && node.isContentEditable) {
+      node.focus();
+      node.textContent = text;
+      node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      return true;
+    }
+    return false;
+  }, value).catch(() => false);
+  if (evaluated) return true;
+
+  await locator.press("ControlOrMeta+A", { delay: 0 }).catch(() => {});
+  await page.keyboard.type(value, { delay: 0 }).catch(() => {});
+  return true;
 }
 
 async function detectTextViaOcr(page) {
@@ -223,7 +265,7 @@ async function ensureZoomWebClient(page) {
   const meetingId = extractMeetingId(currentUrl);
   if (!meetingId || /\/wc\//i.test(currentUrl)) return false;
 
-  const webClientUrl = `https://app.zoom.us/wc/${meetingId}/join`;
+  const webClientUrl = `https://app.zoom.us/wc/${meetingId}/join?prefer=1`;
   console.log(`[shell] Redirecting Zoom native-app link to web client: ${webClientUrl}`);
   await page.goto(webClientUrl, { waitUntil: "domcontentloaded", signal: stopController.signal });
   return true;
@@ -287,9 +329,9 @@ async function clickAnyJoinButton(page) {
 
       if (
         (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
-        (await clickFirstVisible(frame.getByRole("button", { name: /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok)).*/i }))) ||
-        (await clickFirstVisible(zoomTextLocator(frame, /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok)).*/i))) ||
-        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn"), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
+        (await clickFirstVisible(frame.getByRole("button", { name: /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok|agree|accept|start)).*/i }))) ||
+        (await clickFirstVisible(zoomTextLocator(frame, /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok|agree|accept|start)).*/i))) ||
+        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn, .join-dialog__join, .join-audio-container__btn, .zm-btn--primary"), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
         (await clickFirstVisible(frame.locator('[data-testid*="join" i], [id*="join" i], [class*="join" i]'), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
         (await clickFirstVisible(frame.locator('button:has-text("Join")'), { rejectText: /launch meeting|open zoom|zoom meetings/i }))
       ) return true;
@@ -337,6 +379,8 @@ async function findChatInput(page) {
   const selectors = [
     '.tiptap.ProseMirror[contenteditable="true"]',
     '.tiptap.ProseMirror',
+    '.ql-editor[contenteditable="true"]',
+    '.ProseMirror[contenteditable="true"]',
     '.chat-box__chat-textarea[contenteditable="true"]',
     '[contenteditable="true"][role="textbox"]',
     '[contenteditable="true"][aria-label*="message" i]',
@@ -435,11 +479,11 @@ async function waitForChatInput(page) {
   process.on("SIGTERM", () => requestStop("SIGTERM received"));
 
   const joinUrls = [
-    `https://app.zoom.us/wc/join?from=join&confno=${meetingId}`,
-    `https://app.zoom.us/wc/${meetingId}/join`,
-    `https://app.zoom.us/wc/join/${meetingId}`,
-    `https://zoom.us/wc/join?from=join&confno=${meetingId}`,
-    `https://zoom.us/wc/${meetingId}/join`
+    `https://app.zoom.us/wc/${meetingId}/join?prefer=1`,
+    `https://app.zoom.us/wc/join?from=join&confno=${meetingId}&prefer=1`,
+    `https://app.zoom.us/wc/join/${meetingId}?prefer=1`,
+    `https://zoom.us/wc/${meetingId}/join?prefer=1`,
+    `https://zoom.us/wc/join?from=join&confno=${meetingId}&prefer=1`
   ];
 
   async function loadJoinPage(page) {
@@ -470,15 +514,18 @@ async function waitForChatInput(page) {
     for (let i = 0; i < 30 && !shouldStop; i++) {
       if (shouldStop) return;
       await checkAndHandleCaptcha(page);
-      const nameInput = page.locator([
+      const nameSelectors = [
         "#input-for-name",
+        "#inputname",
         'input[name="displayName"]',
         'input[name="screenName"]',
+        'input[name="username"]',
+        'input[autocomplete="name"]',
         'input[aria-label*="name" i]',
         'input[placeholder*="name" i]',
         'input[type="text"]'
-      ].join(", "));
-      if (await fillFirstVisible(nameInput, displayName)) break;
+      ];
+      if (await fillFirstVisibleInFrames(page, nameSelectors, displayName)) break;
       await safeWait(page, CONFIG.pollIntervalMs);
     }
 
@@ -510,7 +557,7 @@ async function waitForChatInput(page) {
       if (maxMessages > 0 && sentMessages >= maxMessages) return;
 
       if (message) {
-        await chatBox.fill(message).catch(() => {});
+        await setEditableText(chatBox, page, message).catch(() => {});
       } else {
         await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
           await page.keyboard.press("ControlOrMeta+V").catch(() => {});
