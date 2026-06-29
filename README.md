@@ -75,6 +75,22 @@ REPEAT_SPEED_MS=20 POLL_INTERVAL_MS=30 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAM
 - `MAX_MESSAGES`: total messages to send before exiting (0 = disabled)
 - `MAX_RESTART_CYCLES`: max waiting-room/removal restart cycles (0 = disabled)
 - `GRACEFUL_SHUTDOWN_MS`: delay before final process exit after stop request
+- `USE_SYSTEM_CHROME=true`: launch the locally installed Google Chrome browser instead of bundled Playwright Chromium; equivalent CLI flag: `--chrome`
+- `STEALTH_MODE=true|false`: enable/disable Chrome stealth hardening (enabled by default); equivalent opt-out CLI flag: `--no-stealth`
+- `PROTONVPN_PROXY_SERVER`: optional Proton VPN proxy endpoint for Chrome traffic (example: `socks5://127.0.0.1:1080` or `http://host:port`). If your Proton VPN app already runs a system-wide tunnel, leave this unset.
+- `PROTONVPN_PROXY_USERNAME` / `PROTONVPN_PROXY_PASSWORD`: optional proxy credentials when your Proton VPN proxy endpoint requires them.
+
+### Chrome stealth + Proton VPN
+
+Stealth hardening is enabled by default and removes common browser automation signals such as `navigator.webdriver`. To force the bot to use installed Google Chrome and route traffic through a Proton VPN proxy endpoint:
+
+```bash
+USE_SYSTEM_CHROME=true \
+PROTONVPN_PROXY_SERVER=socks5://127.0.0.1:1080 \
+node zoom-bot.js 123456789 --message "ping" --chrome
+```
+
+If you use the Proton VPN desktop/client app in full-tunnel mode, start/connect Proton VPN before launching the bot and omit `PROTONVPN_PROXY_SERVER`; Chrome will use the system VPN route.
 
 ---
 
