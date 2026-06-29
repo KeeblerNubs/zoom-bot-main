@@ -22,7 +22,9 @@ const CONFIG = {
   maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
   maxMessages: Number(process.env.MAX_MESSAGES || 0),
   maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),
-  gracefulShutdownMs: Number(process.env.GRACEFUL_SHUTDOWN_MS || 4000)
+  gracefulShutdownMs: Number(process.env.GRACEFUL_SHUTDOWN_MS || 4000),
+  useChrome: process.argv.includes("--chrome") || /^(1|true|yes)$/i.test(process.env.USE_SYSTEM_CHROME || ""),
+  stealthMode: !process.argv.includes("--no-stealth") && !/^(0|false|no)$/i.test(process.env.STEALTH_MODE || "true")
 };
 
 let lastScrollLogTime = 0;
@@ -46,6 +48,40 @@ function requestStop(reason = "stop requested") {
 
 function isError1132(error) {
   return /\b1132\b/.test(String(error?.message || error || ""));
+}
+
+function getProxyConfig() {
+  const server = process.env.PROTONVPN_PROXY_SERVER || process.env.CHROME_PROXY_SERVER || "";
+  if (!server) return undefined;
+
+  const proxy = { server };
+  const username = process.env.PROTONVPN_PROXY_USERNAME || process.env.CHROME_PROXY_USERNAME || "";
+  const password = process.env.PROTONVPN_PROXY_PASSWORD || process.env.CHROME_PROXY_PASSWORD || "";
+  if (username) proxy.username = username;
+  if (password) proxy.password = password;
+  return proxy;
+}
+
+async function applyStealthProfile(context) {
+  if (!CONFIG.stealthMode) return;
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+
+    window.chrome = window.chrome || {};
+    window.chrome.runtime = window.chrome.runtime || {};
+
+    const originalQuery = window.navigator.permissions?.query;
+    if (originalQuery) {
+      window.navigator.permissions.query = (parameters) => (
+        parameters?.name === "notifications"
+          ? Promise.resolve({ state: Notification.permission })
+          : originalQuery(parameters)
+      );
+    }
+  });
 }
 
 function fallbackName() {
@@ -407,13 +443,22 @@ async function findChatInput(page) {
 
 async function createFreshShell() {
   const userDataDir = await mkdtemp(path.join(os.tmpdir(), "zoom-shell-profile-"));
+  const proxy = getProxyConfig();
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: true,
+    channel: CONFIG.useChrome ? "chrome" : undefined,
+    proxy,
     args: [
       "--disable-blink-features=AutomationControlled",
-      "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox"
+      "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
+      "--no-first-run",
+      "--no-default-browser-check"
     ]
   });
+
+  await applyStealthProfile(context);
+
+  console.log(`[shell] Browser: ${CONFIG.useChrome ? "system Chrome" : "bundled Chromium"}; stealth: ${CONFIG.stealthMode ? "on" : "off"}; proxy/VPN: ${proxy ? proxy.server : "system/default"}`);
 
   context.on("page", (newPage) => {
     newPage.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
