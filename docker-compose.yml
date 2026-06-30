@@ -2,6 +2,12 @@ services:
   telegram-zoom-bot:
     build: .
     container_name: telegram-zoom-bot
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       ZOOM_CHAT_MESSAGE: ${ZOOM_CHAT_MESSAGE:-}
@@ -9,4 +15,8 @@ services:
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-30}
       CHAT_DISCOVERY_TIMEOUT_MS: ${CHAT_DISCOVERY_TIMEOUT_MS:-120000}
       MAX_FRAME_SCAN: ${MAX_FRAME_SCAN:-2}
+      WIREGUARD_ENABLED: ${WIREGUARD_ENABLED:-false}
+      WIREGUARD_INTERFACE: ${WIREGUARD_INTERFACE:-wg0}
+      WIREGUARD_CONFIG_PATH: ${WIREGUARD_CONFIG_PATH:-/etc/wireguard/wg0.conf}
+      WIREGUARD_CONFIG_B64: ${WIREGUARD_CONFIG_B64:-}
     restart: unless-stopped

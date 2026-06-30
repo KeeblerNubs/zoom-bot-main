@@ -262,3 +262,42 @@ These settings are chat-scoped and applied to the next `/join` launch.
 
 ### Troubleshooting: `Cannot find module 'dotenv/config'` in systemd logs
 If your unit sets `NODE_OPTIONS=--require dotenv/config`, remove that line. The bot now loads `.env` on startup without preloading `dotenv/config`. Keep `EnvironmentFile=/home/ubuntu/zoom-bot-main/.env` in the unit instead.
+
+---
+
+## Docker WireGuard VPN support
+
+The Docker image includes `wireguard-tools` and starts the bot through `docker-entrypoint.sh`. WireGuard is disabled by default so the container continues to run normally unless you opt in.
+
+> Do not commit real WireGuard configs. They contain a `PrivateKey`, which should be treated like a password. If a private key was shared, rotate/regenerate the VPN profile before using it.
+
+### Enable WireGuard with a base64 config
+
+1. Put your WireGuard config in a local file outside git, for example `./private/wg0.conf`.
+2. Export it as base64:
+   ```bash
+   export WIREGUARD_CONFIG_B64="$(base64 -w0 ./private/wg0.conf)"
+   ```
+3. Start the container with WireGuard enabled:
+   ```bash
+   WIREGUARD_ENABLED=true docker compose up -d --build
+   ```
+
+The entrypoint writes `WIREGUARD_CONFIG_B64` to `/etc/wireguard/wg0.conf`, runs `wg-quick up wg0`, then starts `telegram-bot.js`.
+
+### Enable WireGuard by mounting a config file
+
+Alternatively, mount a local config at `/etc/wireguard/wg0.conf`:
+
+```yaml
+services:
+  telegram-zoom-bot:
+    volumes:
+      - ./private/wg0.conf:/etc/wireguard/wg0.conf:ro
+    environment:
+      WIREGUARD_ENABLED: "true"
+```
+
+The compose file already grants the container the `/dev/net/tun` device, `NET_ADMIN`, and the `net.ipv4.conf.all.src_valid_mark=1` sysctl required by common WireGuard `wg-quick` routes.
+
+A placeholder config is available at `wireguard/wg0.conf.example`; copy it to a private path and replace the placeholders with a freshly generated VPN profile.
