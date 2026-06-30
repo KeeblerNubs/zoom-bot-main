@@ -216,6 +216,52 @@ async function fillFirstVisible(locator, value) {
   return false;
 }
 
+
+async function findVisibleInFrames(page, selectors) {
+  for (const frame of candidateFrames(page)) {
+    const locator = frame.locator(selectors.join(", "));
+    try {
+      const count = await locator.count();
+      for (let i = 0; i < count; i += 1) {
+        const item = locator.nth(i);
+        if (await item.isVisible().catch(() => false)) return item;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function handlePasscodePrompt(page, passcode) {
+  const passcodeSelectors = [
+    '#input-for-pwd',
+    '#inputpasscode',
+    'input[name="password"]',
+    'input[name="passcode"]',
+    'input[type="password"]',
+    'input[aria-label*="passcode" i]',
+    'input[aria-label*="password" i]',
+    'input[placeholder*="passcode" i]',
+    'input[placeholder*="password" i]'
+  ];
+
+  const passcodeInput = await findVisibleInFrames(page, passcodeSelectors);
+  if (!passcodeInput) return false;
+
+  if (!passcode) {
+    console.log('PASSCODE_REQUIRED: Meeting requires a passcode, but no passcode was provided.');
+    requestStop('meeting passcode required');
+    return true;
+  }
+
+  await passcodeInput.fill(passcode, { timeout: 250 }).catch(async () => {
+    await passcodeInput.click({ timeout: 250, force: true });
+    await passcodeInput.press('ControlOrMeta+A', { delay: 0 }).catch(() => {});
+    await passcodeInput.type(passcode, { delay: 0 });
+  });
+  console.log('Filled meeting passcode.');
+  return true;
+}
+
 async function fillFirstVisibleInFrames(page, selectors, value) {
   for (const frame of candidateFrames(page)) {
     const locator = frame.locator(selectors.join(", "));
@@ -507,6 +553,7 @@ async function waitForChatInput(page) {
   const { meetingId, headlessShells } = await getSetupOptions();
   const message = getArgValue("--message");
   const displayName = getArgValue("--name") || fallbackName();
+  const passcode = getArgValue("--passcode") || process.env.ZOOM_PASSCODE || "";
   const stopAtIso = getArgValue("--stop-at");
   const maxMessagesArg = getNumericArgValue("--max-messages");
   const maxRuntimeArgSeconds = getNumericArgValue("--max-runtime-sec");
@@ -559,6 +606,8 @@ async function waitForChatInput(page) {
     for (let i = 0; i < 30 && !shouldStop; i++) {
       if (shouldStop) return;
       await checkAndHandleCaptcha(page);
+      await handlePasscodePrompt(page, passcode);
+      if (shouldStop) return;
       const nameSelectors = [
         "#input-for-name",
         "#inputname",
@@ -575,9 +624,14 @@ async function waitForChatInput(page) {
     }
 
     for (let i = 0; i < 50 && !shouldStop; i++) {
+      await handlePasscodePrompt(page, passcode);
+      if (shouldStop) return;
       if (await clickAnyJoinButton(page)) break;
       await safeWait(page, CONFIG.pollIntervalMs);
     }
+
+    await handlePasscodePrompt(page, passcode);
+    if (shouldStop) return;
 
     const chatTarget = await waitForChatInput(page);
     if (!chatTarget) throw new Error("RESTART_CYCLE");

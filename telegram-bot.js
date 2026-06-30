@@ -101,11 +101,12 @@ function buildZoomCommand(args) {
   return { command: 'node', launchArgs: args };
 }
 
-function runZoomBot(chatId, meetingId, customMessage, name) {
+function runZoomBot(chatId, meetingId, customMessage, name, passcode = '') {
   if (activeRuns.has(chatId)) return null;
   const settings = getSettings(chatId);
   const args = ['zoom-bot.js', meetingId, '--name', name];
   if (customMessage) args.push('--message', customMessage);
+  if (passcode) args.push('--passcode', passcode);
   args.push('--ocr');
   args.push('--headless-shells', String(settings.headlessShells));
   if (settings.maxMessages > 0) args.push('--max-messages', String(settings.maxMessages));
@@ -114,7 +115,7 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
 
   const { command, launchArgs } = buildZoomCommand(args);
   const child = spawn(command, launchArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
-  activeRuns.set(chatId, child);
+  activeRuns.set(chatId, { child, meetingId, customMessage, name, passcodeRequested: false });
 
   let detailedLogs = '';
   const appendLogs = (source, buf) => {
@@ -126,7 +127,21 @@ function runZoomBot(chatId, meetingId, customMessage, name) {
     }
   };
 
-  child.stdout.on('data', (buf) => appendLogs('stdout', buf));
+  child.stdout.on('data', (buf) => {
+    appendLogs('stdout', buf);
+    const run = activeRuns.get(chatId);
+    const text = String(buf || '');
+    if (run && !run.passcodeRequested && text.includes('PASSCODE_REQUIRED')) {
+      run.passcodeRequested = true;
+      pendingMessages.set(chatId, {
+        meetingId,
+        displayName: name,
+        customMessage,
+        awaitingPasscode: true
+      });
+      send(chatId, `Meeting ${meetingId} requires a passcode. Please send the passcode to retry, or /stop to cancel.`).catch(() => {});
+    }
+  });
   child.stderr.on('data', (buf) => appendLogs('stderr', buf));
 
   child.on('error', (error) => {
@@ -232,7 +247,8 @@ async function handleSlashCommand(chatId, text) {
       await send(chatId, 'No active run to stop.');
       return true;
     }
-    child.kill('SIGTERM');
+    const processToKill = child.child || child;
+    processToKill.kill('SIGTERM');
     await send(chatId, 'Stop signal sent to active run.');
     return true;
   }
@@ -255,13 +271,21 @@ async function handleMessage(message) {
     }
   }
 
-  if (activeRuns.has(chatId)) {
-    await send(chatId, 'A Zoom bot run is already active for this chat. Use /status or /stop.');
-    return;
-  }
-
   const pending = pendingMessages.get(chatId);
   if (pending) {
+    if (pending.awaitingPasscode) {
+      const activeRun = activeRuns.get(chatId);
+      if (activeRun) {
+        const processToKill = activeRun.child || activeRun;
+        processToKill.kill('SIGTERM');
+        activeRuns.delete(chatId);
+      }
+      pendingMessages.delete(chatId);
+      runZoomBot(chatId, pending.meetingId, pending.customMessage || defaultMessage, pending.displayName || 'ZoomGuest', text);
+      await send(chatId, `Retrying meeting ${pending.meetingId} with the provided passcode.`);
+      return;
+    }
+
     if (!pending.displayName) {
       const displayName = text || 'ZoomGuest';
       pendingMessages.set(chatId, { ...pending, displayName });
@@ -277,6 +301,11 @@ async function handleMessage(message) {
     if (clamped.truncated) {
       await send(chatId, `Message was truncated to ${MAX_MESSAGE_CHARS} characters (received ${clamped.originalLength}).`);
     }
+    return;
+  }
+
+  if (activeRuns.has(chatId)) {
+    await send(chatId, 'A Zoom bot run is already active for this chat. Use /status or /stop.');
     return;
   }
 
