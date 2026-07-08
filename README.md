@@ -1,4 +1,4 @@
-# Zoom Bot (Playwright)
+# Zoom Bot (CloakBrowser + Playwright)
 
 ## What changed for speed/efficiency
 - Faster loop defaults with small non-zero polling (`POLL_INTERVAL_MS=30`) to avoid CPU thrash.
@@ -9,7 +9,7 @@
 ---
 
 ## Prerequisites
-- Node.js 18+
+- Node.js 20+
 - npm
 - Chromium dependencies for Playwright
 - OCR support:
@@ -37,9 +37,9 @@
    ```bash
    npm install
    ```
-2. Install Playwright Chromium (if not already present):
+2. CloakBrowser is the default browser backend and auto-downloads its stealth Chromium binary on first launch. If you disable it, install Playwright Chromium:
    ```bash
-   npx playwright install chromium
+   USE_CLOAK_BROWSER=false npx playwright install chromium
    ```
 3. Confirm OCR support:
    ```bash
@@ -75,22 +75,26 @@ REPEAT_SPEED_MS=20 POLL_INTERVAL_MS=30 CHAT_DISCOVERY_TIMEOUT_MS=120000 MAX_FRAM
 - `MAX_MESSAGES`: total messages to send before exiting (0 = disabled)
 - `MAX_RESTART_CYCLES`: max waiting-room/removal restart cycles (0 = disabled)
 - `GRACEFUL_SHUTDOWN_MS`: delay before final process exit after stop request
-- `USE_SYSTEM_CHROME=true`: launch the locally installed Google Chrome browser instead of bundled Playwright Chromium; equivalent CLI flag: `--chrome`
+- `USE_CLOAK_BROWSER=true|false`: use CloakBrowser stealth Chromium by default; equivalent opt-out CLI flag: `--no-cloak-browser`
+- `CLOAK_HUMANIZE=true|false`: enable/disable CloakBrowser human-like mouse/keyboard/scroll behavior (enabled by default); equivalent opt-out CLI flag: `--no-humanize`
+- `CLOAK_GEOIP=true|false`: ask CloakBrowser to align timezone/locale with the configured proxy IP (disabled by default because it performs external IP lookups through the proxy)
+- `CLOAKBROWSER_LICENSE_KEY`: optional CloakBrowser Pro license key used by the `cloakbrowser` package when fetching the browser binary
+- `USE_SYSTEM_CHROME=true`: launch the locally installed Google Chrome browser instead of CloakBrowser/Playwright Chromium; equivalent CLI flag: `--chrome` and implies the Playwright backend
 - `STEALTH_MODE=true|false`: enable/disable Chrome stealth hardening (enabled by default); equivalent opt-out CLI flag: `--no-stealth`
 - `PROTONVPN_PROXY_SERVER`: optional Proton VPN proxy endpoint for Chrome traffic (example: `socks5://127.0.0.1:1080` or `http://host:port`). If your Proton VPN app already runs a system-wide tunnel, leave this unset.
 - `PROTONVPN_PROXY_USERNAME` / `PROTONVPN_PROXY_PASSWORD`: optional proxy credentials when your Proton VPN proxy endpoint requires them.
 
-### Chrome stealth + Proton VPN
+### CloakBrowser + Proton VPN
 
-Stealth hardening is enabled by default and removes common browser automation signals such as `navigator.webdriver`. To force the bot to use installed Google Chrome and route traffic through a Proton VPN proxy endpoint:
+CloakBrowser is enabled by default and runs its patched Chromium binary through the same Playwright-style automation flow. To route CloakBrowser traffic through a Proton VPN proxy endpoint:
 
 ```bash
-USE_SYSTEM_CHROME=true \
 PROTONVPN_PROXY_SERVER=socks5://127.0.0.1:1080 \
-node zoom-bot.js 123456789 --message "ping" --chrome
+CLOAK_HUMANIZE=true \
+node zoom-bot.js 123456789 --message "ping"
 ```
 
-If you use the Proton VPN desktop/client app in full-tunnel mode, start/connect Proton VPN before launching the bot and omit `PROTONVPN_PROXY_SERVER`; Chrome will use the system VPN route.
+If you use the Proton VPN desktop/client app in full-tunnel mode, start/connect Proton VPN before launching the bot and omit `PROTONVPN_PROXY_SERVER`; CloakBrowser will use the system VPN route. To fall back to standard Playwright Chromium, pass `--no-cloak-browser` or set `USE_CLOAK_BROWSER=false`.
 
 ---
 

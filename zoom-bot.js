@@ -2,6 +2,8 @@
 const { loadEnvFromFile } = require('./env-loader');
 loadEnvFromFile();
 const { chromium } = require("playwright");
+
+let cloakBrowserModulePromise;
 const readline = require("node:readline/promises");
 const { stdin: input, stdout: output } = require("node:process");
 const { execFile } = require("node:child_process");
@@ -24,6 +26,9 @@ const CONFIG = {
   maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),
   gracefulShutdownMs: Number(process.env.GRACEFUL_SHUTDOWN_MS || 4000),
   useChrome: process.argv.includes("--chrome") || /^(1|true|yes)$/i.test(process.env.USE_SYSTEM_CHROME || ""),
+  useCloakBrowser: !process.argv.includes("--no-cloak-browser") && !process.argv.includes("--chrome") && !/^(0|false|no)$/i.test(process.env.USE_CLOAK_BROWSER || "true"),
+  cloakHumanize: !process.argv.includes("--no-humanize") && !/^(0|false|no)$/i.test(process.env.CLOAK_HUMANIZE || "true"),
+  cloakGeoip: /^(1|true|yes)$/i.test(process.env.CLOAK_GEOIP || ""),
   stealthMode: !process.argv.includes("--no-stealth") && !/^(0|false|no)$/i.test(process.env.STEALTH_MODE || "true")
 };
 
@@ -81,6 +86,53 @@ async function applyStealthProfile(context) {
           : originalQuery(parameters)
       );
     }
+  });
+}
+
+async function getCloakBrowserModule() {
+  if (!cloakBrowserModulePromise) {
+    cloakBrowserModulePromise = import("cloakbrowser").catch((error) => {
+      throw new Error(
+        `CloakBrowser is enabled but the cloakbrowser package could not be loaded: ${error.message}. ` +
+        `Run npm install, or set USE_CLOAK_BROWSER=false / pass --no-cloak-browser to fall back to Playwright Chromium.`
+      );
+    });
+  }
+  return cloakBrowserModulePromise;
+}
+
+function getBrowserLabel(proxy) {
+  if (CONFIG.useCloakBrowser) {
+    return `CloakBrowser; humanize: ${CONFIG.cloakHumanize ? "on" : "off"}; geoip: ${CONFIG.cloakGeoip ? "on" : "off"}; proxy/VPN: ${proxy ? proxy.server : "system/default"}`;
+  }
+  return `${CONFIG.useChrome ? "system Chrome" : "bundled Chromium"}; stealth: ${CONFIG.stealthMode ? "on" : "off"}; proxy/VPN: ${proxy ? proxy.server : "system/default"}`;
+}
+
+async function launchBrowserContext(userDataDir, proxy) {
+  const commonOptions = {
+    headless: true,
+    proxy,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
+      "--no-first-run",
+      "--no-default-browser-check"
+    ]
+  };
+
+  if (CONFIG.useCloakBrowser) {
+    const { launchPersistentContext } = await getCloakBrowserModule();
+    return launchPersistentContext({
+      userDataDir,
+      ...commonOptions,
+      humanize: CONFIG.cloakHumanize,
+      geoip: CONFIG.cloakGeoip
+    });
+  }
+
+  return chromium.launchPersistentContext(userDataDir, {
+    ...commonOptions,
+    channel: CONFIG.useChrome ? "chrome" : undefined
   });
 }
 
@@ -490,21 +542,11 @@ async function findChatInput(page) {
 async function createFreshShell() {
   const userDataDir = await mkdtemp(path.join(os.tmpdir(), "zoom-shell-profile-"));
   const proxy = getProxyConfig();
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: true,
-    channel: CONFIG.useChrome ? "chrome" : undefined,
-    proxy,
-    args: [
-      "--disable-blink-features=AutomationControlled",
-      "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
-      "--no-first-run",
-      "--no-default-browser-check"
-    ]
-  });
+  const context = await launchBrowserContext(userDataDir, proxy);
 
-  await applyStealthProfile(context);
+  if (!CONFIG.useCloakBrowser) await applyStealthProfile(context);
 
-  console.log(`[shell] Browser: ${CONFIG.useChrome ? "system Chrome" : "bundled Chromium"}; stealth: ${CONFIG.stealthMode ? "on" : "off"}; proxy/VPN: ${proxy ? proxy.server : "system/default"}`);
+  console.log(`[shell] Browser: ${getBrowserLabel(proxy)}`);
 
   context.on("page", (newPage) => {
     newPage.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
