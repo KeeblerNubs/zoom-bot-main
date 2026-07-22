@@ -1,7 +1,8 @@
 {
   "dependencies": {
     "playwright": "^1.59.1",
-    "cloakbrowser": "^0.4.8"
+    "cloakbrowser": "^0.4.8",
+    "dotenv": "^17.4.2"
   },
   "name": "zoom-bot-main",
   "version": "1.0.0",

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-const { loadEnvFromFile } = require('./env-loader');
-loadEnvFromFile();
+require('dotenv').config();
 const { chromium } = require("playwright");
 
 let cloakBrowserModulePromise;
@@ -32,13 +31,23 @@ const CONFIG = {
   stealthMode: !process.argv.includes("--no-stealth") && !/^(0|false|no)$/i.test(process.env.STEALTH_MODE || "true")
 };
 
+// Check tesseract availability
+(async () => {
+  try {
+    await execFileAsync('which', ['tesseract']);
+  } catch {
+    console.warn('[ocr] tesseract not found in PATH — OCR disabled');
+    CONFIG.useOcr = false;
+  }
+})();
+
 let lastScrollLogTime = 0;
 let maintenanceTick = 0;
 let lastOcrCheck = 0;
 let shouldStop = false;
 let stopReason = "";
 
-const stopController = new AbortController();
+let stopController;
 let stopResolve;
 const stopPromise = new Promise((resolve) => { stopResolve = resolve; });
 
@@ -451,34 +460,35 @@ async function detectRestartCondition(page) {
 }
 
 async function clickAnyJoinButton(page) {
-  // Always prefer the Zoom web client and never intentionally launch the native app.
-  await clickJoinFromBrowser(page);
-  await checkAndHandleCaptcha(page);
-  await clickDisclaimerAgree(page);
+  const selectors = [
+    'button[class*="join" i]',
+    'button[data-testid*="join" i]',
+    'button:has-text("Join")',
+    'button:has-text("Launch Meeting")',
+    'button:has-text("Join Audio")',
+    'button:has-text("Join with Computer Audio")',
+    'button[aria-label*="join" i]',
+    '.zm-btn--primary',
+    'button.zm-btn--primary',
+    'a[href*="join" i]',
+    // Fallback: any visible button in the main zone
+    '#meetingSDKElement button',
+    '.in-meeting button',
+    'button[type="submit"]',
+  ];
 
-  const frames = candidateFrames(page);
-  for (const frame of frames) {
+  for (const sel of selectors) {
     try {
-      if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
-
-      if (
-        (await frame.locator('.zm-modal-body-title:has-text("Meeting alert")').count().catch(() => 0) > 0 && await clickFirstVisible(frame.getByRole("button", { name: "Later" }))) ||
-        (await clickFirstVisible(frame.getByRole("button", { name: /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok|agree|accept|start)).*/i }))) ||
-        (await clickFirstVisible(zoomTextLocator(frame, /^(?!.*launch meeting)(?=.*(?:join|continue|audio|video|without|allow|got it|ok|agree|accept|start)).*/i))) ||
-        (await clickFirstVisible(frame.locator(".preview-join-button, .join-btn, .join-audio-by-voip__join-btn, .join-dialog__join, .join-audio-container__btn, .zm-btn--primary"), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
-        (await clickFirstVisible(frame.locator('[data-testid*="join" i], [id*="join" i], [class*="join" i]'), { rejectText: /launch meeting|open zoom|zoom meetings/i })) ||
-        (await clickFirstVisible(frame.locator('button:has-text("Join")'), { rejectText: /launch meeting|open zoom|zoom meetings/i }))
-      ) return true;
-    } catch (e) {
-      if (e.message === "RESTART_CYCLE") throw e;
+      const btn = await page.waitForSelector(sel, { timeout: 2000, state: 'visible' });
+      if (btn) {
+        await btn.click({ delay: 80 });
+        console.log(`[clickAnyJoinButton] clicked: ${sel}`);
+        return true;
+      }
+    } catch {
+      // try next selector
     }
   }
-
-  if (Date.now() - lastScrollLogTime > 2000) {
-    console.log("No buttons found yet, scrolling down to discover elements...");
-    lastScrollLogTime = Date.now();
-  }
-  await page.mouse.wheel(0, 250).catch(() => {});
   return false;
 }
 
@@ -602,8 +612,10 @@ async function waitForChatInput(page) {
   const maxRestartsArg = getNumericArgValue("--max-restarts");
 
   let sentMessages = 0;
+  let messageStopFlag = false;
   let restartCount = 0;
   const startedAt = Date.now();
+  stopController = new AbortController();
   const maxRuntimeMs = maxRuntimeArgSeconds > 0 ? maxRuntimeArgSeconds * 1000 : CONFIG.maxRuntimeMs;
   const maxMessages = maxMessagesArg > 0 ? maxMessagesArg : CONFIG.maxMessages;
   const maxRestartCycles = maxRestartsArg > 0 ? maxRestartsArg : CONFIG.maxRestartCycles;
@@ -694,8 +706,13 @@ async function waitForChatInput(page) {
         return;
       }
 
-      // Send one message (guarded by global counter; JS is single-threaded so this is safe enough)
-      if (maxMessages > 0 && sentMessages >= maxMessages) return;
+      if (maxMessages > 0 && messageStopFlag) return;
+
+      // Check & claim atomically before any async work
+      if (maxMessages > 0 && sentMessages >= maxMessages) {
+        messageStopFlag = true;
+        return;
+      }
 
       if (message) {
         await setEditableText(chatBox, page, message).catch(() => {});
@@ -710,9 +727,9 @@ async function waitForChatInput(page) {
       });
 
       sentMessages += 1;
+
       if (maxMessages > 0 && sentMessages >= maxMessages) {
-        requestStop(`max messages reached (${maxMessages})`);
-        return;
+        messageStopFlag = true;
       }
 
       if (!(await safeWait(page, CONFIG.repeatSpeedMs))) return;
@@ -726,9 +743,19 @@ async function waitForChatInput(page) {
       if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
       if (shouldStop) break;
 
-      for (let shellIndex = 0; shellIndex < headlessShells; shellIndex += 1) {
-        const shell = await createFreshShell();
-        activeShells.push(shell);
+      const shellResults = await Promise.allSettled(
+        Array.from({ length: headlessShells }, () => createFreshShell())
+      );
+      for (const result of shellResults) {
+        if (result.status === 'fulfilled') {
+          activeShells.push(result.value);
+        } else {
+          console.error('[shell] creation failed:', result.reason);
+        }
+      }
+      if (activeShells.length === 0) {
+        console.error('[shell] all shells failed to create');
+        return;
       }
 
       console.log(`Opening Zoom with ${headlessShells} headless shell(s)...`);
