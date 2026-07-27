@@ -44,6 +44,7 @@ const CONFIG = {
 let lastScrollLogTime = 0;
 let maintenanceTick = 0;
 let lastOcrCheck = 0;
+const lastJoinButtonClickAtByPage = new WeakMap();
 let shouldStop = false;
 let stopReason = "";
 
@@ -459,7 +460,11 @@ async function detectRestartCondition(page) {
   return ocrText.includes("waiting room") || ocrText.includes("let you in soon");
 }
 
-async function clickAnyJoinButton(page) {
+async function clickAnyJoinButton(page, options = {}) {
+  const minIntervalMs = options.minIntervalMs ?? 1500;
+  const lastClickAt = lastJoinButtonClickAtByPage.get(page) || 0;
+  if (!options.force && Date.now() - lastClickAt < minIntervalMs) return false;
+
   const selectors = [
     'button[class*="join" i]',
     'button[data-testid*="join" i]',
@@ -479,12 +484,31 @@ async function clickAnyJoinButton(page) {
 
   for (const sel of selectors) {
     try {
-      const btn = await page.waitForSelector(sel, { timeout: 2000, state: 'visible' });
-      if (btn) {
-        await btn.click({ delay: 80 });
-        console.log(`[clickAnyJoinButton] clicked: ${sel}`);
+      const btn = await page.waitForSelector(sel, { timeout: 500, state: 'visible' });
+      if (!btn) continue;
+
+      const shouldClick = await btn.evaluate((element) => {
+        const text = `${element.innerText || ""} ${element.getAttribute("aria-label") || ""}`.toLowerCase();
+        const isDisabled = element.disabled || element.getAttribute("aria-disabled") === "true";
+        if (isDisabled) return false;
+
+        // Avoid repeatedly clicking broad fallback buttons after the client has
+        // moved past the initial join steps. Zoom often leaves generic primary
+        // buttons in the DOM (for example chat/audio controls), and clicking
+        // them in a tight poll loop can prevent chat discovery from settling.
+        if (!/join|launch meeting|computer audio/.test(text)) {
+          const idClassHref = `${element.id || ""} ${element.className || ""} ${element.getAttribute("href") || ""}`.toLowerCase();
+          return /join|launch/.test(idClassHref);
+        }
+
         return true;
-      }
+      }).catch(() => false);
+      if (!shouldClick) continue;
+
+      await btn.click({ delay: 80 });
+      lastJoinButtonClickAtByPage.set(page, Date.now());
+      console.log(`[clickAnyJoinButton] clicked: ${sel}`);
+      return true;
     } catch {
       // try next selector
     }
@@ -592,7 +616,7 @@ async function waitForChatInput(page) {
     const fastFound = await findChatInput(page);
     if (fastFound) return fastFound;
 
-    await clickAnyJoinButton(page);
+    await clickAnyJoinButton(page, { minIntervalMs: 3000 });
     const found = await findChatInput(page);
     if (found) return found;
 
@@ -699,7 +723,7 @@ async function waitForChatInput(page) {
       if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
       if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
 
-      if ((maintenanceTick++ % 15) === 0) await clickAnyJoinButton(page).catch(() => {});
+      if ((maintenanceTick++ % 15) === 0 && !(await findChatInput(page))) await clickAnyJoinButton(page, { minIntervalMs: 5000 }).catch(() => {});
 
       if (maxMessages > 0 && sentMessages >= maxMessages) {
         requestStop(`max messages reached (${maxMessages})`);
