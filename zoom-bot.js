@@ -25,7 +25,7 @@ const CONFIG = {
   ocrCheckIntervalMs: Number(process.env.OCR_CHECK_INTERVAL_MS || 5000),
   maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
   maxMessages: Number(process.env.MAX_MESSAGES || 0),
-  maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),
+  maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 2),
   gracefulShutdownMs: Number(process.env.GRACEFUL_SHUTDOWN_MS || 4000),
   useChrome: process.argv.includes("--chrome") || /^(1|true|yes)$/i.test(process.env.USE_SYSTEM_CHROME || ""),
   useCloakBrowser: !process.argv.includes("--no-cloak-browser") && !process.argv.includes("--chrome") && !/^(0|false|no)$/i.test(process.env.USE_CLOAK_BROWSER || "true"),
@@ -855,18 +855,11 @@ async function waitForChatInput(page) {
 
       if (loopCount === 1) console.log(`[shell-${shellIndex}] About to send message: "${message}"`);
       
-      if (message) {
-        console.log(`[shell-${shellIndex}] Setting text...`);
-        await setEditableText(chatBox, page, message).catch((err) => {
-          console.log(`[shell-${shellIndex}] Error setting text: ${err?.message}`);
-        });
-        console.log(`[shell-${shellIndex}] Text set, pressing Enter...`);
-      } else {
-        console.log(`[shell-${shellIndex}] No message, pasting from clipboard...`);
-        await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
-          await page.keyboard.press("ControlOrMeta+V").catch(() => {});
-        });
-      }
+      console.log(`[shell-${shellIndex}] Setting text: "${message}"...`);
+      await setEditableText(chatBox, page, message).catch((err) => {
+        console.log(`[shell-${shellIndex}] Error setting text: ${err?.message}`);
+      });
+      console.log(`[shell-${shellIndex}] Text set, pressing Enter...`);
 
       await chatBox.press("Enter", { delay: 0 }).catch(async () => {
         console.log(`[shell-${shellIndex}] Error pressing Enter, trying keyboard...`);
@@ -877,7 +870,10 @@ async function waitForChatInput(page) {
       console.log(`[shell-${shellIndex}] ✓ Message sent (${sentMessages}/${maxMessages > 0 ? maxMessages : "∞"})`);
 
       if (maxMessages > 0 && sentMessages >= maxMessages) {
+        console.log(`[shell-${shellIndex}] ✓ All messages sent successfully! Stopping...`);
         messageStopFlag = true;
+        requestStop(`all messages sent (${sentMessages}/${maxMessages})`);
+        return;
       }
 
       if (!(await safeWait(page, CONFIG.repeatSpeedMs))) return;
@@ -926,11 +922,12 @@ async function waitForChatInput(page) {
     } catch (error) {
       if (error?.message === "RESTART_CYCLE") {
         restartCount += 1;
-        if (maxRestartCycles > 0 && restartCount > maxRestartCycles) {
-          requestStop(`max restart cycles reached (${maxRestartCycles})`);
+        console.log(`[restart] Cycle #${restartCount}/${maxRestartCycles > 0 ? maxRestartCycles : "∞"}`);
+        if (maxRestartCycles > 0 && restartCount >= maxRestartCycles) {
+          requestStop(`max restart cycles reached (${restartCount}/${maxRestartCycles})`);
           break;
         }
-        console.log("Detected restart condition (waiting room/removal/error 1132). Starting a brand-new Chrome instance...");
+        console.log("[restart] Detected restart condition (waiting room/removal/error 1132). Starting a brand-new Chrome instance...");
         continue;
       }
       if (isError1132(error)) {
