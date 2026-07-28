@@ -6,16 +6,18 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends wireguard-tools iproute2 iptables resolvconf \
     && rm -rf /var/lib/apt/lists/*
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY . .
-RUN chmod +x /app/docker-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV WIREGUARD_ENABLED=false
 ENV WIREGUARD_INTERFACE=wg0
 ENV WIREGUARD_CONFIG_PATH=/etc/wireguard/wg0.conf
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "telegram-bot.js"]
