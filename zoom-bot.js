@@ -701,7 +701,7 @@ async function waitForChatInput(page) {
       }
       if (!message) {
         message = await rl.question("What message should be sent to Zoom chat? (leave empty for default): ");
-        message = message.trim() || process.env.ZOOM_CHAT_MESSAGE || "";
+        message = message.trim() || process.env.ZOOM_CHAT_MESSAGE || "Hey there!";
       }
     } finally {
       rl.close();
@@ -806,6 +806,7 @@ async function waitForChatInput(page) {
     if (shouldStop) return;
 
     console.log(`[shell-${shellIndex}] Waiting for chat input (timeout: ${CONFIG.chatDiscoveryTimeoutMs}ms)...`);
+    console.log(`[shell-${shellIndex}] Message to send: "${message}"`);
     const chatTarget = await waitForChatInput(page);
     if (!chatTarget) {
       console.log(`[shell-${shellIndex}] ✗ Chat input NOT found - restarting...`);
@@ -815,9 +816,17 @@ async function waitForChatInput(page) {
     const { locator: chatBox, selector } = chatTarget;
     await chatBox.click().catch(() => {});
     console.log(`[shell-${shellIndex}] ✓ Chat input found! Selector: ${selector}`);
+    console.log(`[shell-${shellIndex}] ✓ Starting message loop...`);
 
+    let loopCount = 0;
     while (!shouldStop && !page.isClosed()) {
-      if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
+      loopCount++;
+      if (loopCount === 1) console.log(`[shell-${shellIndex}] Entered message loop`);
+      
+      if (await detectRestartCondition(page)) {
+        console.log(`[shell-${shellIndex}] Detected restart condition`);
+        throw new Error("RESTART_CYCLE");
+      }
       if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
       if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
 
@@ -827,27 +836,40 @@ async function waitForChatInput(page) {
       }
 
       if (maxMessages > 0 && sentMessages >= maxMessages) {
+        console.log(`[shell-${shellIndex}] Max messages reached`);
         requestStop(`max messages reached (${maxMessages})`);
         return;
       }
 
-      if (maxMessages > 0 && messageStopFlag) return;
+      if (maxMessages > 0 && messageStopFlag) {
+        console.log(`[shell-${shellIndex}] Message stop flag set`);
+        return;
+      }
 
       // Check & claim atomically before any async work
       if (maxMessages > 0 && sentMessages >= maxMessages) {
         messageStopFlag = true;
+        console.log(`[shell-${shellIndex}] Setting message stop flag`);
         return;
       }
 
+      if (loopCount === 1) console.log(`[shell-${shellIndex}] About to send message: "${message}"`);
+      
       if (message) {
-        await setEditableText(chatBox, page, message).catch(() => {});
+        console.log(`[shell-${shellIndex}] Setting text...`);
+        await setEditableText(chatBox, page, message).catch((err) => {
+          console.log(`[shell-${shellIndex}] Error setting text: ${err?.message}`);
+        });
+        console.log(`[shell-${shellIndex}] Text set, pressing Enter...`);
       } else {
+        console.log(`[shell-${shellIndex}] No message, pasting from clipboard...`);
         await chatBox.press("ControlOrMeta+V", { delay: 0 }).catch(async () => {
           await page.keyboard.press("ControlOrMeta+V").catch(() => {});
         });
       }
 
       await chatBox.press("Enter", { delay: 0 }).catch(async () => {
+        console.log(`[shell-${shellIndex}] Error pressing Enter, trying keyboard...`);
         await page.keyboard.press("Enter").catch(() => {});
       });
 
