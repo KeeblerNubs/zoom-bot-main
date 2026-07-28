@@ -54,8 +54,8 @@ The `.env` file is already configured with:
 ```powershell
 # Set environment variables before running
 $env:REPEAT_SPEED_MS = 50
-$env:USE_CLOAK_BROWSER = "false"
-$env:STEALTH_MODE = "false"
+$env:USE_CLOAK_BROWSER = "true"
+$env:STEALTH_MODE = "true"
 
 node zoom-bot.js 123456789 --message "test"
 ```

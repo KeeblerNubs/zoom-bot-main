@@ -8,6 +8,15 @@
   .\run.ps1
 #>
 
+# Ensure Tesseract is in PATH
+if (-not ($env:Path -like '*Tesseract*')) {
+    $tesseractPath = "C:\Program Files\Tesseract-OCR"
+    if (Test-Path "$tesseractPath\tesseract.exe") {
+        $env:Path += ";$tesseractPath"
+        [Environment]::SetEnvironmentVariable("Path", $env:Path, "User")
+    }
+}
+
 function Show-Menu {
     Write-Host "`n=== ZOOM BOT LAUNCHER ===" -ForegroundColor Cyan
     Write-Host "1. Run Zoom Bot (interactive - will prompt for meeting ID)"
@@ -34,12 +43,16 @@ function Start-ZoomBotWithArgs {
     $name = Read-Host "Enter display name (leave empty for random)"
     $message = Read-Host "Enter chat message"
     
-    $args = @("zoom-bot.js", $meetingId, "--name", ($name -or "ZoomGuest"))
+    $args = @("zoom-bot.js", $meetingId)
+    if ($name) {
+        $args += @("--name", $name)
+    }
     if ($message) {
         $args += @("--message", $message)
     }
     
     Write-Host "Starting Zoom Bot..." -ForegroundColor Green
+    Write-Host "Command: node zoom-bot.js $meetingId $(if ($name) { "--name `"$name`"" }) $(if ($message) { "--message `"$message`"" })" -ForegroundColor DarkGray
     & node @args
 }
 
@@ -55,12 +68,13 @@ function Start-ZoomBotMultiShell {
     
     $message = Read-Host "Enter chat message"
     
-    $args = @("zoom-bot.js", $meetingId, "--headless-shells", [string]$shellCount)
+    $args = @("zoom-bot.js", $meetingId, "--headless-shells", "$shellCount")
     if ($message) {
         $args += @("--message", $message)
     }
     
-    Write-Host "Starting Zoom Bot with $shellCount shells..." -ForegroundColor Green
+    Write-Host "Starting Zoom Bot with $shellCount shell(s)..." -ForegroundColor Green
+    Write-Host "Command: node zoom-bot.js $meetingId --headless-shells $shellCount $(if ($message) { "--message `"$message`"" })" -ForegroundColor DarkGray
     & node @args
 }
 
