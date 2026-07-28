@@ -25,7 +25,17 @@
   ```bash
   brew install tesseract
   ```
-- Windows (Chocolatey):
+- Windows (Pre-installed at default location):
+  ```powershell
+  # Already installed at: C:\Program Files\Tesseract-OCR
+  # Add to PATH (run as Administrator or update user PATH):
+  $env:Path += ";C:\Program Files\Tesseract-OCR"
+  [Environment]::SetEnvironmentVariable("Path", $env:Path, "User")
+  
+  # Verify installation:
+  tesseract --version
+  ```
+- Windows (Chocolatey, if not already installed):
   ```powershell
   choco install tesseract
   ```
@@ -41,8 +51,9 @@
    ```bash
    USE_CLOAK_BROWSER=false npx playwright install chromium
    ```
-3. Confirm OCR support:
+3. Confirm OCR support (Windows may need PATH refresh):
    ```bash
+   refreshenv  # PowerShell only
    tesseract --version
    ```
 4. Run bot with meeting ID:
@@ -110,11 +121,13 @@ node zoom-bot.js 123456789 \
   --max-restarts 5
 ```
 
-Optional flags:
-- `--max-messages <N>`: stop after N sent messages.
-- `--max-runtime-sec <N>`: stop after N seconds.
-- `--max-restarts <N>`: stop after N restart cycles triggered by waiting-room/removal detection.
+**Control flags:**
+- `--max-messages <N>`: stop after N sent messages (default: 0 = no limit).
+- `--max-runtime-sec <N>`: stop after N seconds (default: 0 = no limit).
+- `--max-restarts <N>`: stop after N restart cycles triggered by waiting-room/removal detection (default: 2 = graceful shutdown).
 - `--stop-at <ISO-8601>`: stop at a specific absolute UTC/local timestamp (example: `2026-05-18T20:30:00Z`).
+
+**Default behavior:** Bot will restart up to **2 times** before exiting gracefully. Override with `--max-restarts 0` to allow infinite restarts (not recommended).
 
 Signals:
 - `SIGINT` / `SIGTERM` trigger a graceful stop path (browser closes cleanly, then process exits).
@@ -122,8 +135,10 @@ Signals:
 ---
 
 ## Notes
-- OCR is enabled by default for fallback state detection; normal DOM selector flow is still primary and faster.
-- If `--message` is not provided, bot falls back to clipboard paste (`Ctrl/Cmd+V`) then Enter.
+- **OCR is enabled by default** for fallback state detection; normal DOM selector flow is still primary and faster.
+- **Message delivery is guaranteed** — `--message` uses direct text input + Enter (no clipboard dependency).
+- **Graceful shutdown** — bot exits cleanly after `--max-restarts` (default: 2) instead of running forever.
+- If `--message` is not provided, bot prompts interactively with fallback to `ZOOM_CHAT_MESSAGE` env var or default "Hey there!".
 
 ---
 
