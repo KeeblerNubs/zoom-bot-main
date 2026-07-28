@@ -14,16 +14,7 @@ const path = require("node:path");
 const execFileAsync = promisify(execFile);
 const { execFileSync } = require("node:child_process");
 
-// Synchronous tesseract availability check at module load time —
-// this runs before any async operation, so CONFIG.useOcr is set
-// deterministically before the main logic starts.
-try {
-  execFileSync('tesseract', ['--version'], { stdio: 'ignore', timeout: 3000 });
-} catch {
-  console.warn('[ocr] tesseract not found in PATH — OCR disabled');
-  CONFIG.useOcr = false;
-}
-
+// CONFIG must be defined before any code tries to access it
 const CONFIG = {
   turboMode: true,
   repeatSpeedMs: Number(process.env.REPEAT_SPEED_MS || 20),
@@ -43,13 +34,23 @@ const CONFIG = {
   stealthMode: !process.argv.includes("--no-stealth") && !/^(0|false|no)$/i.test(process.env.STEALTH_MODE || "true")
 };
 
-// Check tesseract availability
+// Check tesseract availability synchronously at startup
+try {
+  execFileSync('tesseract', ['--version'], { stdio: 'ignore', timeout: 3000 });
+} catch {
+  console.warn('[ocr] tesseract not found in PATH — OCR disabled');
+  CONFIG.useOcr = false;
+}
+
+// Also check tesseract availability asynchronously
 (async () => {
   try {
     await execFileAsync('which', ['tesseract']);
   } catch {
-    console.warn('[ocr] tesseract not found in PATH — OCR disabled');
-    CONFIG.useOcr = false;
+    if (CONFIG.useOcr) {
+      console.warn('[ocr] tesseract not found in PATH — OCR disabled');
+      CONFIG.useOcr = false;
+    }
   }
 })();
 
@@ -477,54 +478,100 @@ async function clickAnyJoinButton(page, options = {}) {
   const lastClickAt = lastJoinButtonClickAtByPage.get(page) || 0;
   if (!options.force && Date.now() - lastClickAt < minIntervalMs) return false;
 
+  // Enhanced selectors for better coverage
   const selectors = [
+    // Primary join buttons
+    'button:has-text("Join")',
+    'button[aria-label*="join" i]',
     'button[class*="join" i]',
     'button[data-testid*="join" i]',
-    'button:has-text("Join")',
+    // Meeting launch
     'button:has-text("Launch Meeting")',
+    'button:has-text("Launch")',
+    // Audio join options
     'button:has-text("Join Audio")',
     'button:has-text("Join with Computer Audio")',
-    'button[aria-label*="join" i]',
-    '.zm-btn--primary',
-    'button.zm-btn--primary',
+    'button:has-text("Computer Audio")',
+    // Zoom branded buttons
+    '.zm-btn--primary:visible',
+    'button.zm-btn--primary:visible',
+    '[class*="JoinButton"]',
+    '[data-testid="join-button"]',
+    // Links
     'a[href*="join" i]',
-    // Fallback: any visible button in the main zone
-    '#meetingSDKElement button',
-    '.in-meeting button',
-    'button[type="submit"]',
+    // Container buttons
+    '#meetingSDKElement button:visible',
+    '.in-meeting button:visible',
+    // Generic fallbacks
+    'button[type="submit"]:visible',
+    'button[form*="join" i]',
   ];
 
+  // Try multiple strategies to find and click join button
   for (const sel of selectors) {
     try {
-      const btn = await page.waitForSelector(sel, { timeout: 500, state: 'visible' });
-      if (!btn) continue;
-
-      const shouldClick = await btn.evaluate((element) => {
-        const text = `${element.innerText || ""} ${element.getAttribute("aria-label") || ""}`.toLowerCase();
-        const isDisabled = element.disabled || element.getAttribute("aria-disabled") === "true";
-        if (isDisabled) return false;
-
-        // Avoid repeatedly clicking broad fallback buttons after the client has
-        // moved past the initial join steps. Zoom often leaves generic primary
-        // buttons in the DOM (for example chat/audio controls), and clicking
-        // them in a tight poll loop can prevent chat discovery from settling.
-        if (!/join|launch meeting|computer audio/.test(text)) {
-          const idClassHref = `${element.id || ""} ${element.className || ""} ${element.getAttribute("href") || ""}`.toLowerCase();
-          return /join|launch/.test(idClassHref);
+      // Strategy 1: Direct waitForSelector
+      let btn = await page.locator(sel).first().elementHandle({ timeout: 300 }).catch(() => null);
+      
+      if (btn) {
+        const shouldClick = await btn.evaluate((element) => {
+          const text = `${element.innerText || ""} ${element.getAttribute("aria-label") || ""}`.toLowerCase();
+          const isDisabled = element.disabled || element.getAttribute("aria-disabled") === "true";
+          const isHidden = window.getComputedStyle(element).display === 'none' || 
+                          window.getComputedStyle(element).visibility === 'hidden';
+          
+          if (isDisabled || isHidden) return false;
+          if (!text) return false;
+          
+          return true;
+        }).catch(() => false);
+        
+        if (shouldClick) {
+          await btn.click().catch(async () => {
+            await page.locator(sel).first().click({ force: true, timeout: 100 }).catch(() => {});
+          });
+          lastJoinButtonClickAtByPage.set(page, Date.now());
+          console.log(`[join] ✓ Clicked join button: ${sel}`);
+          return true;
         }
-
-        return true;
-      }).catch(() => false);
-      if (!shouldClick) continue;
-
-      await btn.click({ delay: 80 });
-      lastJoinButtonClickAtByPage.set(page, Date.now());
-      console.log(`[clickAnyJoinButton] clicked: ${sel}`);
-      return true;
-    } catch {
-      // try next selector
+      }
+    } catch (err) {
+      // Continue to next selector
     }
   }
+  
+  // Strategy 2: Search within frames
+  for (const frame of candidateFrames(page)) {
+    try {
+      const frameSelectors = [
+        'button:has-text("Join")',
+        'button[aria-label*="join" i]',
+        '.zm-btn--primary',
+        'button[class*="join" i]'
+      ];
+      
+      for (const sel of frameSelectors) {
+        const btn = await frame.locator(sel).first().elementHandle({ timeout: 200 }).catch(() => null);
+        if (btn) {
+          try {
+            await btn.click();
+            lastJoinButtonClickAtByPage.set(page, Date.now());
+            console.log(`[join] ✓ Clicked join button in frame: ${sel}`);
+            return true;
+          } catch (e) {
+            // Try force click
+            try {
+              await frame.locator(sel).first().click({ force: true, timeout: 100 });
+              lastJoinButtonClickAtByPage.set(page, Date.now());
+              console.log(`[join] ✓ Force-clicked join button in frame: ${sel}`);
+              return true;
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+  
   return false;
 }
 
@@ -639,8 +686,28 @@ async function waitForChatInput(page) {
 
 (async () => {
   const { meetingId, headlessShells } = await getSetupOptions();
-  const message = getArgValue("--message");
-  const displayName = getArgValue("--name") || fallbackName();
+  
+  // Get message and name from CLI args or prompt interactively
+  let message = getArgValue("--message");
+  let displayName = getArgValue("--name");
+  
+  // If message or name not provided on CLI, ask interactively
+  if (!message || !displayName) {
+    const rl = readline.createInterface({ input, output });
+    try {
+      if (!displayName) {
+        displayName = await rl.question("What name should be used in Zoom? (leave empty for random): ");
+        displayName = displayName.trim() || fallbackName();
+      }
+      if (!message) {
+        message = await rl.question("What message should be sent to Zoom chat? (leave empty for default): ");
+        message = message.trim() || process.env.ZOOM_CHAT_MESSAGE || "";
+      }
+    } finally {
+      rl.close();
+    }
+  }
+  
   const passcode = getArgValue("--passcode") || process.env.ZOOM_PASSCODE || "";
   const stopAtIso = getArgValue("--stop-at");
   const maxMessagesArg = getNumericArgValue("--max-messages");
@@ -688,11 +755,18 @@ async function waitForChatInput(page) {
 
   async function workerLoop(shellIndex, page) {
     // Join + find chat
+    console.log(`[shell-${shellIndex}] Starting join sequence...`);
+    
     for (let attempt = 0; attempt < 50 && !shouldStop; attempt++) {
-      if (await clickAnyJoinButton(page)) break;
+      if (attempt % 10 === 0) console.log(`[shell-${shellIndex}] Join attempt ${attempt}...`);
+      if (await clickAnyJoinButton(page)) {
+        console.log(`[shell-${shellIndex}] ✓ Join button clicked on attempt ${attempt}`);
+        break;
+      }
       if (!(await safeWait(page, CONFIG.pollIntervalMs))) return;
     }
 
+    console.log(`[shell-${shellIndex}] Looking for name field...`);
     for (let i = 0; i < 30 && !shouldStop; i++) {
       if (shouldStop) return;
       await checkAndHandleCaptcha(page);
@@ -709,33 +783,48 @@ async function waitForChatInput(page) {
         'input[placeholder*="name" i]',
         'input[type="text"]'
       ];
-      if (await fillFirstVisibleInFrames(page, nameSelectors, displayName)) break;
+      if (await fillFirstVisibleInFrames(page, nameSelectors, displayName)) {
+        console.log(`[shell-${shellIndex}] ✓ Name field filled: ${displayName}`);
+        break;
+      }
       await safeWait(page, CONFIG.pollIntervalMs);
     }
 
+    console.log(`[shell-${shellIndex}] Final join clicks...`);
     for (let i = 0; i < 50 && !shouldStop; i++) {
+      if (i % 10 === 0) console.log(`[shell-${shellIndex}] Final join attempt ${i}...`);
       await handlePasscodePrompt(page, passcode);
       if (shouldStop) return;
-      if (await clickAnyJoinButton(page)) break;
+      if (await clickAnyJoinButton(page, { force: true })) {
+        console.log(`[shell-${shellIndex}] ✓ Final join button clicked on attempt ${i}`);
+        break;
+      }
       await safeWait(page, CONFIG.pollIntervalMs);
     }
 
     await handlePasscodePrompt(page, passcode);
     if (shouldStop) return;
 
+    console.log(`[shell-${shellIndex}] Waiting for chat input (timeout: ${CONFIG.chatDiscoveryTimeoutMs}ms)...`);
     const chatTarget = await waitForChatInput(page);
-    if (!chatTarget) throw new Error("RESTART_CYCLE");
+    if (!chatTarget) {
+      console.log(`[shell-${shellIndex}] ✗ Chat input NOT found - restarting...`);
+      throw new Error("RESTART_CYCLE");
+    }
 
     const { locator: chatBox, selector } = chatTarget;
     await chatBox.click().catch(() => {});
-    console.log(`[shell-${shellIndex}] Chat input found using selector: ${selector}`);
+    console.log(`[shell-${shellIndex}] ✓ Chat input found! Selector: ${selector}`);
 
     while (!shouldStop && !page.isClosed()) {
       if (await detectRestartCondition(page)) throw new Error("RESTART_CYCLE");
       if (maxRuntimeMs > 0 && Date.now() - startedAt >= maxRuntimeMs) requestStop(`max runtime reached (${maxRuntimeMs}ms)`);
       if (Number.isFinite(stopAtMs) && Date.now() >= stopAtMs) requestStop(`stop-at reached (${new Date(stopAtMs).toISOString()})`);
 
-      if ((maintenanceTick++ % 15) === 0 && !(await findChatInput(page))) await clickAnyJoinButton(page, { minIntervalMs: 5000 }).catch(() => {});
+      if ((maintenanceTick++ % 15) === 0 && !(await findChatInput(page))) {
+        console.log(`[shell-${shellIndex}] Maintenance: Re-clicking join button...`);
+        await clickAnyJoinButton(page, { minIntervalMs: 5000 }).catch(() => {});
+      }
 
       if (maxMessages > 0 && sentMessages >= maxMessages) {
         requestStop(`max messages reached (${maxMessages})`);
@@ -763,6 +852,7 @@ async function waitForChatInput(page) {
       });
 
       sentMessages += 1;
+      console.log(`[shell-${shellIndex}] ✓ Message sent (${sentMessages}/${maxMessages > 0 ? maxMessages : "∞"})`);
 
       if (maxMessages > 0 && sentMessages >= maxMessages) {
         messageStopFlag = true;
@@ -800,8 +890,11 @@ async function waitForChatInput(page) {
       await Promise.all(activeShells.map(async (shell, idx) => {
         if (shouldStop) return;
         const ok = await loadJoinPage(shell.page);
-        if (!ok) throw new Error("RESTART_CYCLE");
-        console.log(`[shell-${idx}] join page loaded`);
+        if (!ok) {
+          console.log(`[shell-${idx}] ✗ Failed to load join page`);
+          throw new Error("RESTART_CYCLE");
+        }
+        console.log(`[shell-${idx}] ✓ Join page loaded successfully`);
       }));
 
       // Run parallel workers (each shell participates)
