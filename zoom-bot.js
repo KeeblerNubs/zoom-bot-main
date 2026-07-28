@@ -12,6 +12,17 @@ const os = require("node:os");
 const path = require("node:path");
 
 const execFileAsync = promisify(execFile);
+const { execFileSync } = require("node:child_process");
+
+// Synchronous tesseract availability check at module load time —
+// this runs before any async operation, so CONFIG.useOcr is set
+// deterministically before the main logic starts.
+try {
+  execFileSync('tesseract', ['--version'], { stdio: 'ignore', timeout: 3000 });
+} catch {
+  console.warn('[ocr] tesseract not found in PATH — OCR disabled');
+  CONFIG.useOcr = false;
+}
 
 const CONFIG = {
   turboMode: true,
@@ -20,6 +31,7 @@ const CONFIG = {
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30),
   maxFrameScanPerCycle: Number(process.env.MAX_FRAME_SCAN || 8),
   useOcr: !process.argv.includes("--no-ocr"),
+  ocrCheckIntervalMs: Number(process.env.OCR_CHECK_INTERVAL_MS || 5000),
   maxRuntimeMs: Number(process.env.MAX_RUNTIME_MS || 0),
   maxMessages: Number(process.env.MAX_MESSAGES || 0),
   maxRestartCycles: Number(process.env.MAX_RESTART_CYCLES || 0),
